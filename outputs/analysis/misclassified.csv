@@ -1,0 +1,12 @@
+image_path,true,pred,top1,top2
+./balanced_augmented_dataset/test/Oblique_Displaced/Oblique_Displaced_134_jpg.rf.afc3aa7bb9317657032c1dd9ad21bb58_0001.jpg,3,6,6,6
+./balanced_augmented_dataset/test/Oblique_Displaced/Oblique_Displaced_185_jpg.rf.296574d4d73b3b275f98485e55929b36_0015.jpg,3,6,6,6
+./balanced_augmented_dataset/test/Oblique_Displaced/Oblique_Displaced_153_jpg.rf.377dd7ac02acd51e04cd3613b0816efe_0008.jpg,3,6,6,6
+./balanced_augmented_dataset/test/Oblique_Displaced/Oblique_Displaced_5_jpg.rf.d4f1d168998b27496281d8000f5b56bf_0006.jpg,3,6,6,6
+./balanced_augmented_dataset/test/Oblique/Oblique_9_jpg.rf.4a2eecbaf02555d48ef01a5e9f9932e8_0005.jpg,4,2,2,2
+./balanced_augmented_dataset/test/Transverse_Displaced/Transverse_Displaced_149_jpg.rf.db6198d03b6a213a007469309023a78b_0016.jpg,6,7,7,7
+./balanced_augmented_dataset/test/Transverse_Displaced/Transverse_Displaced_139_jpg.rf.f6d15b51cf51fa8fda93fa4016bbb957_0001.jpg,6,1,1,1
+./balanced_augmented_dataset/test/Transverse_Displaced/Transverse_Displaced_132_jpg.rf.cd34131e4299cef2bba36b8c1596c8b3_0010.jpg,6,7,7,7
+./balanced_augmented_dataset/test/Transverse_Displaced/Transverse_Displaced_85_jpg.rf.32697d7d2444a34a01b41f290e609cd5_0009.jpg,6,1,1,1
+./balanced_augmented_dataset/test/Transverse_Displaced/Transverse_Displaced_69_jpg.rf.2719c75f64f1281b6d2fde87672137b5_0015.jpg,6,3,3,3
+./balanced_augmented_dataset/test/Transverse/Transverse_86_jpg.rf.b8e18505035a64082a0c06ee4ed33db6_0014.jpg,7,3,3,3

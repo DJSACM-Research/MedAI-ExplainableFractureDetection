@@ -6,6 +6,17 @@ __pycache__/
 # C extensions
 *.so
 
+balanced_augmented_dataset/train/
+balanced_augmented_dataset/val/
+balanced_augmented_dataset/test/
+
+wandb/
+
+outputs/swin_mps_debug/epoch_0.pth
+outputs/swin_mps_debug/best.pth 
+outputs/analysis/examples/
+outputs/swin_mps/ 
+
 # Distribution / packaging
 .Python
 build/
