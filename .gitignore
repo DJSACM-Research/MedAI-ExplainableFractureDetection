@@ -6,9 +6,7 @@ __pycache__/
 # C extensions
 *.so
 
-balanced_augmented_dataset/train/
-balanced_augmented_dataset/val/
-balanced_augmented_dataset/test/
+balanced_augmented_dataset/
 
 wandb/
 
