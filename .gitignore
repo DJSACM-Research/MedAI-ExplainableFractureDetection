@@ -14,7 +14,7 @@ outputs/swin_mps_debug/epoch_0.pth
 outputs/swin_mps_debug/best.pth 
 outputs/analysis/examples/
 outputs/swin_mps/ 
-
+outputs/cross_validation/
 # Distribution / packaging
 .Python
 build/
