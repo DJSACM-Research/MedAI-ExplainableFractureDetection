@@ -28,8 +28,10 @@ from src.agents.cross_validation_agent import ModelEnsembleAgent
 from src.utils import get_device
 
 # --- Configuration for Ollama ---
-OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3"  # Ensure you have pulled this model using 'ollama pull llama3'
+# Support both localhost and host.docker.internal for Docker deployments
+OLLAMA_ENDPOINT = os.getenv("OLLAMA_ENDPOINT", os.getenv("OLLAMA_HOST", "http://localhost:11434") + "/api/generate")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")  # Ensure you have pulled this model using 'ollama pull llama3'
+OLLAMA_CHECK_URL = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 # --- Constants ---
 CLASS_NAMES = ["Comminuted", "Greenstick", "Healthy", "Oblique", 
@@ -73,7 +75,7 @@ class PatientInteractionAgent:
         """Initialize the agent with medical context."""
         # --- Connection Check ---
         try:
-            response = requests.get("http://localhost:11434", timeout=5)
+            response = requests.get(OLLAMA_CHECK_URL, timeout=5)
             if response.status_code != 200:
                 raise ConnectionError("Ollama server is not running or accessible.")
         except requests.exceptions.ConnectionError:
@@ -299,6 +301,7 @@ def run_complete_workflow(image_path: str) -> Dict[str, Any]:
 def main():
     """Main Streamlit application."""
     st.title("🦴 AI Medical Assistant for Fracture Detection & Diagnosis")
+    st.info("⚠️ **Research/Educational Use Only** - This system is not approved for clinical use without professional oversight.")
     st.markdown("---")
     
     # Initialize session state
@@ -492,7 +495,7 @@ def main():
             # Check for Ollama availability
             ollama_available = False
             try:
-                response = requests.get("http://localhost:11434", timeout=2)
+                response = requests.get(OLLAMA_CHECK_URL, timeout=2)
                 ollama_available = response.status_code == 200
             except:
                 ollama_available = False
