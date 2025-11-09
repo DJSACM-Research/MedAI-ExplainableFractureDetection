@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import time
 from pathlib import Path
@@ -24,16 +25,10 @@ from pytorch_grad_cam import GradCAM, HiResCAM, ScoreCAM, GradCAMPlusPlus, Ablat
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
 
-# ----------------------------- Device Selection -----------------------------
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-def get_device():
-    """Dynamically selects CUDA or falls back to CPU."""
-    if torch.cuda.is_available():
-        return torch.device('cuda')
-    elif getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():
-        return torch.device('mps')
-    else:
-        return torch.device('cpu')
+from src.utils import get_device, get_model, get_transforms
 
 DEVICE = get_device()
 print(f"Using device: {DEVICE}")
@@ -75,45 +70,29 @@ class FractureDataset(Dataset):
         return img, label, img_path, raw_img
 
 
-# ----------------------------- Transforms (Reusing logic from pipeline.py) -----------------------------
+# ----------------------------- Model selection with Grad-CAM target layers -----------------------------
 
-def get_transforms(img_size: int = 224):
-    # Only need validation/test transforms for analysis
-    return T.Compose([
-        T.Resize((img_size, img_size)),
-        T.CenterCrop(img_size),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-    ])
-
-# ----------------------------- Model selection (Reusing logic from pipeline.py) -----------------------------
-
-def get_model(name: str, num_classes: int, pretrained: bool=True):
+def get_model_with_target_layer(name: str, num_classes: int, pretrained: bool=True):
+    """Get model and its target layer for Grad-CAM visualization."""
+    model = get_model(name, num_classes, pretrained=pretrained)
     name = name.lower()
+    
     if name.startswith('swin'):
-        # Use the specific Swin model name
-        model = timm.create_model('swin_small_patch4_window7_224', pretrained=pretrained)
-        if hasattr(model, 'reset_classifier'):
-            model.reset_classifier(num_classes=num_classes)
-        else:
-            model.head = nn.Linear(model.head.in_features, num_classes)
         # Target layer for Swin: the last layer of the last stage (blocks[-1][-1])
         target_layer = model.layers[-1].blocks[-1].norm2
         return model, target_layer
     
     if name.startswith('convnext'):
-        model = timm.create_model('convnext_tiny', pretrained=pretrained)
-        if hasattr(model, 'reset_classifier'):
-            model.reset_classifier(num_classes=num_classes)
-        else:
-            model.head.fc = nn.Linear(model.head.fc.in_features, num_classes)
         # Target layer for ConvNext: the last block of the feature extractor
         target_layer = model.stages[-1]
         return model, target_layer
     
-    # You can add other models here if needed...
+    if name.startswith('densenet'):
+        # Target layer for DenseNet: features.norm5
+        target_layer = model.features.norm5
+        return model, target_layer
 
-    raise ValueError(f'Unknown model: {name}')
+    raise ValueError(f'Unknown target layer for model: {name}')
 
 
 # ----------------------------- Helpers: CSV loader -----------------------------
@@ -135,7 +114,7 @@ def analyze(args):
     test_rows = load_csv_like(args.test_csv)
     
     # Get model and the target layer for Grad-CAM
-    model, target_layer = get_model(args.model, args.num_classes, pretrained=False)
+    model, target_layer = get_model_with_target_layer(args.model, args.num_classes, pretrained=False)
     model.to(device)
 
     # Load checkpoint weights
@@ -145,7 +124,7 @@ def analyze(args):
     print(f'Loaded model from {args.checkpoint} onto {device}.')
 
     # Data setup
-    test_tf = get_transforms(args.img_size)
+    test_tf = get_transforms('val', args.img_size)
     test_ds = FractureDataset(test_rows, img_root=args.img_root, transform=test_tf)
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False) # Use batch size 1 for accurate CAM per image
 

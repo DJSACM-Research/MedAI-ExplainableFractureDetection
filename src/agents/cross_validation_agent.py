@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import torch
 import torch.nn as nn
@@ -8,65 +9,17 @@ from PIL import Image
 from typing import List, Dict, Any
 import timm 
 
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+from src.utils import get_device, get_model, get_transforms
+
 # ----------------------------------------------------------------------
-# --- Helper Functions ---
+# --- Global Variables ---
 # ----------------------------------------------------------------------
 
-DEVICE = None
+DEVICE = get_device()
 IMG_SIZE = 224
-
-def get_device():
-    """Detects and returns the appropriate torch device."""
-    global DEVICE
-    if DEVICE is None:
-        if torch.cuda.is_available(): 
-            DEVICE = torch.device('cuda')
-        elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available(): 
-            DEVICE = torch.device('mps')
-        else:
-            DEVICE = torch.device('cpu')
-    return DEVICE
-
-def get_model(name: str, num_classes: int, pretrained: bool=True):
-    """Loads and adapts one of the specified pretrained models from timm."""
-    name = name.lower()
-    
-    model_map = {
-        'swin': 'swin_small_patch4_window7_224',
-        'mobilenetv2': 'mobilenetv2_100',
-        'efficientnetv2': 'tf_efficientnetv2_s',
-        'maxvit': 'maxvit_rmlp_small_rw_224',
-        'densenet169': 'densenet169',
-    }
-    
-    if name not in model_map:
-        raise ValueError(f"Unknown model: {name}")
-
-    m = timm.create_model(model_map[name], pretrained=pretrained)
-    
-    # Adjust classifier head based on common timm model types
-    if hasattr(m, 'head') and isinstance(m.head, nn.Linear):
-        m.head = nn.Linear(m.head.in_features, num_classes)
-    elif hasattr(m, 'fc') and isinstance(m.fc, nn.Linear):
-        m.fc = nn.Linear(m.fc.in_features, num_classes)
-    elif hasattr(m, 'classifier') and isinstance(m.classifier, nn.Linear):
-        m.classifier = nn.Linear(m.classifier.in_features, num_classes)
-    else:
-        try:
-            m.reset_classifier(num_classes=num_classes)
-        except Exception:
-            raise RuntimeError(f"Could not automatically adapt classifier head for {name}")
-
-    return m
-
-def get_transforms(img_size: int = 224):
-    """Standard image transformations for inference."""
-    return T.Compose([
-        T.Resize((img_size, img_size)),
-        T.CenterCrop(img_size),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
 
 # ----------------------------------------------------------------------
 # --- Model Ensemble Agent Core (with all fixes) ---
@@ -78,9 +31,9 @@ class ModelEnsembleAgent:
         self.model_names = model_names
         self.num_classes = num_classes
         self.class_names = class_names
-        self.transforms = get_transforms(IMG_SIZE)
+        self.transforms = get_transforms('val', IMG_SIZE)
         
-        self.device = get_device() 
+        self.device = DEVICE
         self._load_all_models(checkpoints_dir)
 
     def _load_all_models(self, checkpoints_dir: str):

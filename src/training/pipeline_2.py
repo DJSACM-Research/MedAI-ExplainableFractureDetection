@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import time
 import copy
@@ -20,117 +21,15 @@ from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 import cv2
 import csv 
 
-# ----------------------------- Device Selection (CUDA Preferred) -----------------------------
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-def get_device():
-    """Dynamically selects CUDA, MPS, or falls back to CPU."""
-    if torch.cuda.is_available():
-        return torch.device('cuda') 
-    elif getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():
-        return torch.device('mps')  
-    else:
-        return torch.device('cpu')  
+from src.utils import get_device, get_model, get_transforms, FractureDataset
+
+# ----------------------------- Device Selection -----------------------------
 
 DEVICE = get_device()
 print(f"Using device: {DEVICE}")
-
-# ----------------------------- Dataset (CRITICAL PATH FIX HERE) -----------------------------
-class FractureDataset(Dataset):
-    def __init__(self, df, img_root: str = '.', transform=None, use_bbox: bool=False):
-        self.entries = df
-        self.img_root = img_root
-        self.transform = transform
-        self.use_bbox = use_bbox
-        # Define all potential redundant prefixes based on your data structure
-        # We need to strip everything up to the class folder name
-        self.prefixes_to_strip = ('balanced_augmented_dataset/', 'train/', 'val/', 'test/')
-
-    def __len__(self):
-        return len(self.entries)
-
-    def __getitem__(self, idx):
-        row = self.entries[idx]
-        img_path = row['image_path']
-        
-        # --- PATH CLEANING FIX ---
-        # Strip all known redundant prefixes from the path loaded from the CSV
-        original_path = img_path
-        
-        for prefix in self.prefixes_to_strip:
-            if img_path.startswith(prefix):
-                img_path = img_path[len(prefix):]
-        
-        # If the path is still too long, aggressively strip everything before the last folder (the class name)
-        # This handles cases where the path is: balanced_augmented_dataset/Class/Image.jpg
-        # and we only want: Class/Image.jpg
-        if original_path == img_path:
-             # Look for the deepest directory that holds the class name, e.g., 'Comminuted/aug_...'
-             parts = original_path.split('/')
-             if len(parts) > 2:
-                 # Take the last two components (Class Name / Filename)
-                 img_path = '/'.join(parts[-2:])
-        # -------------------------
-
-        if not os.path.isabs(img_path):
-            # Combine the cleaned path with the root (which is '.')
-            img_path = os.path.join(self.img_root, img_path)
-            
-        img = Image.open(img_path).convert('RGB')
-
-        if self.use_bbox and all(k in row for k in ('bbox_xmin','bbox_ymin','bbox_xmax','bbox_ymax')):
-            xmin = int(row['bbox_xmin']); ymin = int(row['bbox_ymin']); xmax = int(row['bbox_xmax']); ymax = int(row['bbox_ymax'])
-            img = img.crop((xmin, ymin, xmax, ymax))
-
-        label = int(row['label']) 
-        if self.transform:
-            img = self.transform(img)
-        return img, label, img_path
-
-# ----------------------------- Transforms -----------------------------
-# (Omitted for brevity, but stays the same as before)
-def get_transforms(split: str, img_size: int = 224):
-    if split == 'train':
-        return T.Compose([
-            T.Resize((int(img_size*1.1), int(img_size*1.1))),
-            T.RandomResizedCrop(img_size, scale=(0.8, 1.0)),
-            T.RandomRotation(15),
-            T.RandomHorizontalFlip(),
-            T.ToTensor(),
-            T.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-        ])
-    else:
-        return T.Compose([
-            T.Resize((img_size, img_size)),
-            T.CenterCrop(img_size),
-            T.ToTensor(),
-            T.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-        ])
-
-# ----------------------------- Model selection -----------------------------
-# (Omitted for brevity, but stays the same as before)
-def get_model(name: str, num_classes: int, pretrained: bool=True):
-    name = name.lower()
-    if name.startswith('swin'):
-        model = timm.create_model('swin_small_patch4_window7_224', pretrained=pretrained)
-        if hasattr(model, 'reset_classifier'):
-            model.reset_classifier(num_classes=num_classes)
-        else:
-            model.head = nn.Linear(model.head.in_features, num_classes)
-        return model
-    if name.startswith('convnext'):
-        model = timm.create_model('convnext_tiny', pretrained=pretrained)
-        if hasattr(model, 'reset_classifier'):
-            model.reset_classifier(num_classes=num_classes)
-        else:
-            model.head.fc = nn.Linear(model.head.fc.in_features, num_classes)
-        return model
-    if name.startswith('densenet'):
-        model = tvmodels.densenet169(pretrained=pretrained)
-        in_features = model.classifier.in_features
-        model.classifier = nn.Linear(in_features, num_classes)
-        return model
-    raise ValueError(f'Unknown model: {name}')
-
 
 # ----------------------------- Training & Evaluation -----------------------------
 # (Omitted for brevity, but stays the same as before)

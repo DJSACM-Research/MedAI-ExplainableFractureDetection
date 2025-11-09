@@ -9,9 +9,10 @@ Features:
 - Stage-2 Grad-CAM cropping and retrain supported.
 
 Usage (example):
-    # install dependencies (see terminal commands below for mac-specific instructions)
-    python fracture_classification_pipeline_mps_wandb.py \
-        --train-csv data/train.csv --val-csv data/val.csv --test-csv data/test.csv \
+    python src/training/pipeline.py \
+        --train-csv data/balanced_augmented_dataset/train.csv \
+        --val-csv data/balanced_augmented_dataset/val.csv \
+        --test-csv data/balanced_augmented_dataset/test.csv \
         --model swin --num-classes 8 --epochs 20 --batch-size 6 --img-size 224 \
         --out-dir outputs/swin_mps --wandb-project fracture-mps --wandb-entity your_entity
 
@@ -23,6 +24,7 @@ Notes:
 """
 
 import os
+import sys
 import argparse
 import time
 import copy
@@ -43,87 +45,15 @@ import wandb
 from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 import cv2
 
-# ----------------------------- Device (MPS only) -----------------------------
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-def require_mps():
-    if getattr(torch.backends, 'mps', None) is None or not torch.backends.mps.is_available():
-        raise RuntimeError('MPS (Apple Silicon) is required for this script but was not detected on this machine.')
-    return torch.device('mps')
+from src.utils import require_mps, get_model, get_transforms, FractureDataset
+
+# ----------------------------- Device (MPS only) -----------------------------
 
 DEVICE = require_mps()
 print(f"Using device: {DEVICE}")
-
-# ----------------------------- Dataset -----------------------------
-class FractureDataset(Dataset):
-    def __init__(self, df, img_root: str = '.', transform=None, use_bbox: bool=False):
-        self.entries = df
-        self.img_root = img_root
-        self.transform = transform
-        self.use_bbox = use_bbox
-
-    def __len__(self):
-        return len(self.entries)
-
-    def __getitem__(self, idx):
-        row = self.entries[idx]
-        img_path = row['image_path']
-        if not os.path.isabs(img_path):
-            img_path = os.path.join(self.img_root, img_path)
-        img = Image.open(img_path).convert('RGB')
-
-        if self.use_bbox and all(k in row for k in ('bbox_xmin','bbox_ymin','bbox_xmax','bbox_ymax')):
-            xmin = int(row['bbox_xmin']); ymin = int(row['bbox_ymin']); xmax = int(row['bbox_xmax']); ymax = int(row['bbox_ymax'])
-            img = img.crop((xmin, ymin, xmax, ymax))
-
-        label = int(row['label'])
-        if self.transform:
-            img = self.transform(img)
-        return img, label, img_path
-
-# ----------------------------- Transforms -----------------------------
-
-def get_transforms(split: str, img_size: int = 224):
-    if split == 'train':
-        return T.Compose([
-            T.Resize((int(img_size*1.1), int(img_size*1.1))),
-            T.RandomResizedCrop(img_size, scale=(0.8, 1.0)),
-            T.RandomRotation(15),
-            T.RandomHorizontalFlip(),
-            T.ToTensor(),
-            T.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-        ])
-    else:
-        return T.Compose([
-            T.Resize((img_size, img_size)),
-            T.CenterCrop(img_size),
-            T.ToTensor(),
-            T.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-        ])
-
-# ----------------------------- Model selection -----------------------------
-
-def get_model(name: str, num_classes: int, pretrained: bool=True):
-    name = name.lower()
-    if name.startswith('swin'):
-        model = timm.create_model('swin_small_patch4_window7_224', pretrained=pretrained)
-        if hasattr(model, 'reset_classifier'):
-            model.reset_classifier(num_classes=num_classes)
-        else:
-            model.head = nn.Linear(model.head.in_features, num_classes)
-        return model
-    if name.startswith('convnext'):
-        model = timm.create_model('convnext_tiny', pretrained=pretrained)
-        if hasattr(model, 'reset_classifier'):
-            model.reset_classifier(num_classes=num_classes)
-        else:
-            model.head.fc = nn.Linear(model.head.fc.in_features, num_classes)
-        return model
-    if name.startswith('densenet'):
-        model = tvmodels.densenet169(pretrained=pretrained)
-        in_features = model.classifier.in_features
-        model.classifier = nn.Linear(in_features, num_classes)
-        return model
-    raise ValueError(f'Unknown model: {name}')
 
 # ----------------------------- Training & Evaluation -----------------------------
 

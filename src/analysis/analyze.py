@@ -1,41 +1,20 @@
 # analyze_results.py
-import os, csv, argparse, numpy as np, matplotlib.pyplot as plt
+import os, sys, csv, argparse, numpy as np, matplotlib.pyplot as plt
 from PIL import Image
 import torch, torch.nn as nn, torchvision.transforms as T
 import timm, torchvision.models as tvmodels
 from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 import cv2
 
-def get_model(name, num_classes):
-    name = name.lower()
-    if name.startswith('swin'):
-        m = timm.create_model('swin_small_patch4_window7_224', pretrained=False)
-        if hasattr(m, 'reset_classifier'):
-            m.reset_classifier(num_classes=num_classes)
-        else:
-            m.head = nn.Linear(m.head.in_features, num_classes)
-        return m
-    if name.startswith('convnext'):
-        m = timm.create_model('convnext_tiny', pretrained=False)
-        if hasattr(m, 'reset_classifier'):
-            m.reset_classifier(num_classes=num_classes)
-        else:
-            m.head.fc = nn.Linear(m.head.fc.in_features, num_classes)
-        return m
-    if name.startswith('densenet'):
-        m = tvmodels.densenet169(pretrained=False)
-        m.classifier = nn.Linear(m.classifier.in_features, num_classes)
-        return m
-    raise ValueError('model')
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+from src.utils import get_device, get_model, get_transforms
 
 def load_csv(path):
     with open(path) as f:
         reader = csv.DictReader(f)
         return [r for r in reader]
-
-def transform_for_eval(img_size=224):
-    return T.Compose([T.Resize((img_size,img_size)), T.ToTensor(),
-                      T.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
 
 def save_confusion(cm, labels, out_path):
     fig, ax = plt.subplots(figsize=(8,8))
@@ -61,15 +40,15 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     class_names = [s.strip() for s in args.class_names.split(',')]
     num_classes = len(class_names)
-    device = torch.device('mps') if torch.backends.mps.is_available() else torch.device('cpu')
+    device = get_device()
 
-    model = get_model(args.model, num_classes)
+    model = get_model(args.model, num_classes, pretrained=False)
     ck = torch.load(args.checkpoint, map_location='cpu')
     model.load_state_dict(ck['model_state_dict'])
     model.to(device); model.eval()
 
     rows = load_csv(args.test_csv)
-    tf = transform_for_eval(args.img_size)
+    tf = get_transforms('val', args.img_size)
     preds, trues, paths, probs = [], [], [], []
     os.makedirs(os.path.join(args.out_dir,'examples'), exist_ok=True)
 

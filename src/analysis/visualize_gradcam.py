@@ -11,7 +11,7 @@ For each row this script saves a PNG with:
   - difference overlay (pred - true)
 
 Usage:
-    python visualize_gradcam.py \
+    python src/analysis/visualize_gradcam.py \
       --checkpoint outputs/swin_mps/best.pth \
       --misclassified outputs/analysis/misclassified.csv \
       --img-root . \
@@ -25,6 +25,7 @@ Notes:
 """
 
 import os
+import sys
 import csv
 import argparse
 from pathlib import Path
@@ -40,63 +41,15 @@ import torchvision.transforms as T
 import timm
 import torchvision.models as tvmodels
 
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-def detect_device():
-    if getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():
-        return torch.device('mps')
-    return torch.device('cpu')
+from src.utils import get_device, get_model, get_transforms
 
+DEVICE = get_device()
+print(f"Using device: {DEVICE}")
 
-def get_model(name: str, num_classes: int, pretrained=False):
-    name = name.lower()
-    if name.startswith('swin'):
-        m = timm.create_model('swin_small_patch4_window7_224', pretrained=pretrained)
-        # Check the existing head structure and adapt so the final module
-        # matches the checkpoint's expected keys. Some timm versions use
-        # `m.head.fc` (a submodule named "fc"); others expose `m.head`
-        # directly as an nn.Linear. The checkpoint in this repo has
-        # `head.fc.weight`/`head.fc.bias`, so prefer creating a `head`
-        # module with a child `fc` when needed.
-        orig_head = m.head
-        # helper simple wrapper with .fc attribute when we need it
-        class _HeadWithFC(nn.Module):
-            def __init__(self, in_features, out_features):
-                super().__init__()
-                self.fc = nn.Linear(in_features, out_features)
-            def forward(self, x):
-                return self.fc(x)
-
-        if hasattr(orig_head, 'fc'):
-            # existing head already has .fc (most compatible case)
-            in_f = orig_head.fc.in_features
-            m.head.fc = nn.Linear(in_f, num_classes)
-        elif isinstance(orig_head, nn.Linear):
-            # head is a Linear module — wrap it so state_dict keys like
-            # `head.fc.weight` will exist
-            in_f = orig_head.in_features
-            m.head = _HeadWithFC(in_f, num_classes)
-        else:
-            # fallback: try to find an in_features attribute or replace
-            # head with our wrapper using a best-effort in_features value
-            in_f = getattr(getattr(orig_head, 'fc', orig_head), 'in_features', None)
-            if in_f is None:
-                # last resort: try model's default embed dim or raise
-                try:
-                    in_f = m.head.in_features
-                except Exception:
-                    raise RuntimeError('Unable to determine head in_features for Swin model')
-            m.head = _HeadWithFC(in_f, num_classes)
-        return m
-    if name.startswith('convnext'):
-        m = timm.create_model('convnext_tiny', pretrained=pretrained)
-        m.head.fc = nn.Linear(m.head.fc.in_features, num_classes)
-        return m
-    if name.startswith('densenet'):
-        m = tvmodels.densenet169(pretrained=pretrained)
-        m.classifier = nn.Linear(m.classifier.in_features, num_classes)
-        return m
-    raise ValueError('unknown model')
-
+# ----------------------------- Grad-CAM Implementation -----------------------------
 
 class GradCAM:
     """Hook-based Grad-CAM. Call with a model (in eval mode) and a target conv layer name (optional).

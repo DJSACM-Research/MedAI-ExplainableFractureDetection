@@ -1,48 +1,17 @@
 import os
+import sys
 import argparse
 import torch
-import torch.nn as nn
-import torchvision.transforms as T
-import timm
 from PIL import Image
-import numpy as np
 from typing import Dict, Any, List
 
-# --- 1. CONFIGURATION ---
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-def get_device():
-    """Dynamically selects CUDA, MPS, or falls back to CPU."""
-    if torch.cuda.is_available():
-        return torch.device('cuda')
-    elif getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():
-        return torch.device('mps')
-    else:
-        return torch.device('cpu')
+# --- 1. CONFIGURATION ---
+from src.utils import get_device, get_model, get_transforms
 
 DEVICE = get_device()
-
-def get_model(name: str, num_classes: int, pretrained: bool=True):
-    """Loads the model architecture (Swin, ConvNext, etc.)."""
-    name = name.lower()
-    if name.startswith('swin'):
-        model = timm.create_model('swin_small_patch4_window7_224', pretrained=pretrained)
-        if hasattr(model, 'reset_classifier'):
-            model.reset_classifier(num_classes=num_classes)
-        else:
-            model.head = nn.Linear(model.head.in_features, num_classes)
-        return model
-    
-    # Add other model loading logic here if needed (ConvNext, Densenet, etc.)
-    raise ValueError(f'Unknown model: {name}')
-
-def get_transforms(img_size: int = 224):
-    """Returns the standard test/validation transforms."""
-    return T.Compose([
-        T.Resize((img_size, img_size)),
-        T.CenterCrop(img_size),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-    ])
 
 # --- 2. DIAGNOSTIC AGENT CORE ---
 
@@ -70,7 +39,7 @@ class DiagnosticAgent:
             exit(1)
 
         # 3. Setup Transforms
-        self.transform = get_transforms(self.img_size)
+        self.transform = get_transforms('val', self.img_size)
 
     def run_diagnosis(self, image_path: str) -> Dict[str, Any]:
         """
