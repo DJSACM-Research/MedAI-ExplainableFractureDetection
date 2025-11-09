@@ -191,7 +191,7 @@ python src/agents/cross_validation_agent.py \
 ## 📂 Repository Structure
 
 ```
-acm_hardik/
+MedAI-ExplainableFractureDetection/
 │
 ├── README.md                          # This file
 ├── LICENSE                            # MIT License
@@ -674,7 +674,7 @@ If you use this code in your research, please cite:
   title = {MedAI: Explainable Fracture Detection System},
   year = {2025},
   publisher = {GitHub},
-  url = {https://github.com/DJSACM-Research/acm_hardik}
+  url = {https://github.com/DJSACM-Research/MedAI-ExplainableFractureDetection}
 }
 ```
 
@@ -746,7 +746,7 @@ DJSACM Research Lab
 
 For questions, collaborations, or issues:
 
-- **GitHub Issues**: [Open an issue](https://github.com/DJSACM-Research/acm_hardik/issues)
+- **GitHub Issues**: [Open an issue](https://github.com/DJSACM-Research/MedAI-ExplainableFractureDetection/issues)
 - **Email**: research@djsacm.org (replace with actual contact)
 - **Documentation**: See [`docs/REFERENCE.md`](docs/REFERENCE.md) for API details
 
@@ -754,10 +754,10 @@ For questions, collaborations, or issues:
 
 ## 🔗 Useful Links
 
-- **WandB Project**: [fracture-detection](https://wandb.ai/your-entity/fracture-detection)
-- **Model Checkpoints**: [Google Drive](https://drive.google.com/drive/folders/...) (add link)
-- **Demo Video**: [YouTube](https://youtube.com/...) (add link)
-- **Research Paper**: [arXiv](https://arxiv.org/abs/...) (add when published)
+- **WandB Project**: [fracture-detection](https://api.wandb.ai/links/mumbaihacks/sqalpvuw)
+- **Model Checkpoints**: [Google Drive](https://drive.google.com/drive/folders/12Q9u9h6wtlR0kuW4ivz_9fg4eDZKoPAy?usp=sharing) 
+- **Demo Video**: TO BE ADDED
+- **Research Paper**: TO BE ADDED
 
 ---
 
@@ -777,12 +777,12 @@ For questions, collaborations, or issues:
 
 ---
 
-**Last Updated:** January 2025  
+**Last Updated:** November 2025  
 **Version:** 1.0.0  
 **Status:** ✅ Research Code (Stable)
 
 ---
 
 <div align="center">
-  <sub>Built with ❤️ by the DJSACM Research Team</sub>
+  <sub>Built with ❤️ by the DJSCE ACM Research Team</sub>
 </div>
