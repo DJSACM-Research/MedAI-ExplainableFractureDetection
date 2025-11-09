@@ -24,7 +24,7 @@ class TestModelEnsembleAgentInitialization(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        self.model_names = ['swin', 'mobilenetv2', 'densenet169']
+        self.model_names = ['swin', 'mobilenetv2', 'densenet169', 'efficientnetv2', 'maxvit']
         self.num_classes = 8
         self.class_names = ["Comminuted", "Greenstick", "Healthy", "Oblique", 
                            "Oblique Displaced", "Spiral", "Transverse", "Transverse Displaced"]
@@ -203,7 +203,7 @@ class TestEnsemblePredictionAggregation(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        self.model_names = ['swin', 'mobilenetv2', 'densenet169']
+        self.model_names = ['swin', 'mobilenetv2', 'densenet169', 'efficientnetv2', 'maxvit']
         self.num_classes = 8
         self.class_names = ["Comminuted", "Greenstick", "Healthy", "Oblique", 
                            "Oblique Displaced", "Spiral", "Transverse", "Transverse Displaced"]
@@ -225,25 +225,7 @@ class TestEnsemblePredictionAggregation(unittest.TestCase):
         """Test that soft voting (averaging) aggregates predictions correctly."""
         mock_device.return_value = torch.device('cpu')
         
-        # Create deterministic model outputs for testing
-        outputs = [
-            torch.tensor([[0.0, 0.0, 0.9, 0.0, 0.0, 0.05, 0.05, 0.0]]),  # Healthy
-            torch.tensor([[0.0, 0.0, 0.85, 0.0, 0.0, 0.1, 0.05, 0.0]]),  # Healthy
-            torch.tensor([[0.0, 0.0, 0.80, 0.0, 0.0, 0.15, 0.05, 0.0]])  # Healthy
-        ]
-        
-        mock_models = {}
-        for i, name in enumerate(self.model_names):
-            mock_model = MagicMock()
-            mock_model.return_value = outputs[i]
-            mock_model.eval = MagicMock()
-            mock_model.to = MagicMock(return_value=mock_model)
-            mock_models[name] = mock_model
-        
-        def get_model_side_effect(name, *args, **kwargs):
-            return mock_models.get(name, MagicMock())
-        
-        mock_get_model.side_effect = get_model_side_effect
+        mock_get_model.return_value = MagicMock()
         mock_load.return_value = {'model_state_dict': {}}
         
         mock_transform = MagicMock()
@@ -251,9 +233,31 @@ class TestEnsemblePredictionAggregation(unittest.TestCase):
         mock_transforms.return_value = mock_transform
         
         with tempfile.TemporaryDirectory() as tmpdir:
+            # Create checkpoints
             for name in self.model_names:
                 checkpoint_path = os.path.join(tmpdir, f'best_{name}.pth')
                 torch.save({'model_state_dict': {}}, checkpoint_path)
+            
+            # Create logits that when passed through softmax will give high confidence for Healthy (index 2)
+            # Raw logits: Healthy (index 2) has high value, others low
+            logits = [
+                torch.tensor([[-5.0, -5.0, 3.0, -5.0, -5.0, -5.0, -5.0, -5.0]]),  # swin: Healthy strong
+                torch.tensor([[-5.0, -5.0, 2.5, -5.0, -5.0, -5.0, -5.0, -5.0]]),  # mobilenetv2: Healthy strong
+                torch.tensor([[-5.0, -5.0, 2.8, -5.0, -5.0, -5.0, -5.0, -5.0]]),  # densenet169: Healthy strong
+                torch.tensor([[-5.0, -5.0, 3.2, -5.0, -5.0, -5.0, -5.0, -5.0]]),  # efficientnetv2: Healthy strong
+                torch.tensor([[-5.0, -5.0, 2.9, -5.0, -5.0, -5.0, -5.0, -5.0]])   # maxvit: Healthy strong
+            ]
+            
+            mock_models = {}
+            for i, name in enumerate(self.model_names):
+                mock_model = MagicMock()
+                # Make the model callable - capture index in a way that persists
+                mock_model.return_value = logits[i]
+                mock_model.eval = MagicMock(return_value=mock_model)
+                mock_model.to = MagicMock(return_value=mock_model)
+                mock_models[name] = mock_model
+            
+            mock_get_model.side_effect = lambda *args, **kwargs: mock_models[args[0]]
             
             agent = ModelEnsembleAgent(
                 model_names=self.model_names,

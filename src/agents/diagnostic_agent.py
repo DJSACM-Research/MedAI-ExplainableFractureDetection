@@ -20,6 +20,7 @@ class DiagnosticAgent:
         self.device = DEVICE
         self.img_size = img_size
         self.class_names = class_names
+        self.model_name = model_name
         
         # 1. Load Model Architecture
         self.model = get_model(model_name, num_classes, pretrained=False).to(self.device)
