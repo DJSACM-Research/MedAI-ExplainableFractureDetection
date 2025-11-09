@@ -237,11 +237,9 @@ MedAI-ExplainableFractureDetection/
 │   └── patient_chat_app.py           # Streamlit chatbot (LLaMA 3 via Ollama)
 │
 ├── notebooks/                         # Jupyter notebooks
-│   ├── eda/
-│   │   └── ai-fracture-detection-eda.ipynb  # Exploratory data analysis
-│   ├── training/                     # Training notebooks (Colab/Kaggle)
-│   │   └── (place your .ipynb files here)
-│   └── experiments/                  # Experimental notebooks
+│   ├── eda/                           # Exploratory data analysis
+│   ├── training/                      # Training notebooks (Colab/Kaggle)
+│   └── experiments/                   # Experimental notebooks
 │
 ├── data/                              # Dataset files (not tracked in git)
 │   └── balanced_augmented_dataset/
@@ -499,36 +497,6 @@ streamlit run apps/patient_chat_app.py
 
 ---
 
-## 🧪 Experimental Notebooks
-
-### EDA Notebook
-**File:** [`notebooks/eda/ai-fracture-detection-eda.ipynb`](notebooks/eda/ai-fracture-detection-eda.ipynb)
-
-**Contents:**
-- Dataset statistics (class distribution, image dimensions)
-- Data quality checks (corrupted images, outliers)
-- Visualization of fracture types
-- Augmentation strategy justification
-
-### Training Notebooks (Colab/Kaggle)
-**Directory:** [`notebooks/training/`](notebooks/training/)
-
-Place your cloud-trained notebooks here for reproducibility. Example structure:
-
-```
-notebooks/training/
-├── swin_colab_training.ipynb
-├── convnext_kaggle_training.ipynb
-└── ensemble_experiment.ipynb
-```
-
-**Benefits:**
-- GPU access (T4/P100 on Colab, P100/V100 on Kaggle)
-- Easy hyperparameter sweeps
-- Integrated with Kaggle datasets
-
----
-
 ## 🛠️ Development Workflow
 
 ### Stage 1: Baseline Training
@@ -574,65 +542,6 @@ python src/training/pipeline.py \
 
 ---
 
-## 📋 Configuration Files
-
-### `requirements.txt`
-```txt
-torch>=2.0.0
-torchvision>=0.15.0
-timm>=0.9.0
-numpy>=1.24.0
-pandas>=2.0.0
-pillow>=10.0.0
-opencv-python>=4.8.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
-scikit-learn>=1.3.0
-wandb>=0.15.0
-streamlit>=1.28.0
-requests>=2.31.0
-pytorch-grad-cam>=1.4.0
-```
-
-### `.gitignore`
-```gitignore
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
-ENV/
-
-# Data (large files)
-data/
-*.jpg
-*.png
-*.csv
-
-# Model checkpoints
-outputs/
-*.pth
-*.pt
-*.ckpt
-
-# WandB
-wandb/
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
-
-# IDEs
-.vscode/
-.idea/
-*.swp
-```
-
----
-
 ## 🔬 Research Context
 
 ### Related Work
@@ -664,22 +573,6 @@ This system builds upon recent advances in:
 
 ---
 
-## 📚 Citation
-
-If you use this code in your research, please cite:
-
-```bibtex
-@software{medai_fracture_detection_2025,
-  author = {DJSACM Research},
-  title = {MedAI: Explainable Fracture Detection System},
-  year = {2025},
-  publisher = {GitHub},
-  url = {https://github.com/DJSACM-Research/MedAI-ExplainableFractureDetection}
-}
-```
-
----
-
 ## 🤝 Contributing
 
 We welcome contributions! Please follow these steps:
@@ -699,40 +592,10 @@ We welcome contributions! Please follow these steps:
 
 ---
 
-## 📝 License
-
-This project is licensed under the MIT License - see the [`LICENSE`](LICENSE) file for details.
-
-```
-MIT License
-
-Copyright (c) 2025 DJSACM-Research
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
----
-
 ## 👥 Authors & Acknowledgments
 
 **Research Team:**  
-DJSACM Research Lab
+DJSCE ACM Research
 
 **Acknowledgments:**
 - Dataset: [AI Fracture Detection Dataset](https://www.kaggle.com/datasets/pkdarabi/bone-fracture-detection-computer-vision-project)
