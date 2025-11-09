@@ -29,8 +29,10 @@ from src.agents.cross_validation_agent import ModelEnsembleAgent
 from src.utils import get_device
 
 # --- Hugging Face Inference API Configuration ---
-HF_API_KEY = st.secrets.get("HUGGINGFACE_API_KEY", "")
-HF_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
+# Try both uppercase and lowercase key names for flexibility
+HF_API_KEY = st.secrets.get("HUGGINGFACE_API_KEY", st.secrets.get("huggingface_api_key", ""))
+# HF_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
+HF_API_URL = "https://router.huggingface.co/v1/chat/completions"
 HF_HEADERS = {"Authorization": f"Bearer {HF_API_KEY}"}
 
 # --- Constants ---
@@ -114,13 +116,22 @@ Medical History: {self.patient_history.get('history')}"""
             # Format prompt for Mistral using [INST] tags
             full_prompt = f"{self.system_prompt}\n\nPATIENT QUERY: {query}"
             
+            # payload = {
+            #     "inputs": f"[INST] {full_prompt} [/INST]",
+            #     "parameters": {
+            #         "max_new_tokens": 512,
+            #         "return_full_text": False,
+            #         "temperature": 0.7,
+            #     }
+            # }
             payload = {
-                "inputs": f"[INST] {full_prompt} [/INST]",
-                "parameters": {
-                    "max_new_tokens": 512,
-                    "return_full_text": False,
-                    "temperature": 0.7,
-                }
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"[INST] {full_prompt} [/INST]"
+                    }
+                ],
+                "model": "meta-llama/Llama-3.1-8B-Instruct:cerebras"
             }
 
             response = requests.post(
@@ -132,12 +143,15 @@ Medical History: {self.patient_history.get('history')}"""
             response.raise_for_status()
 
             result = response.json()
+            result = result["choices"][0]["message"]
 
             # Handle different response formats
             if isinstance(result, list) and len(result) > 0:
                 return result[0].get("generated_text", "Error: Unexpected API response format.")
             elif isinstance(result, dict) and "generated_text" in result:
                 return result["generated_text"]
+            elif isinstance(result, dict) and "content" in result:
+                return result["content"]
             elif "error" in result:
                 # Handle API errors (e.g., model loading, rate limiting)
                 error_msg = result.get("error", "Unknown error")
@@ -161,13 +175,24 @@ Medical History: {self.patient_history.get('history')}"""
 
 def save_uploaded_file(uploaded_file) -> str:
     """Save uploaded file to a temporary location."""
+    if uploaded_file is None:
+        return None
+    
     try:
+        import tempfile
+        # Create a temporary file in temp_uploads directory
         temp_dir = Path("./temp_uploads")
         temp_dir.mkdir(exist_ok=True)
-        tmp_file = temp_dir / uploaded_file.name
-        with open(tmp_file, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-            return tmp_file.name
+        
+        # Create temp file with proper extension
+        suffix = Path(uploaded_file.name).suffix or '.jpg'
+        with tempfile.NamedTemporaryFile(
+            dir=str(temp_dir),
+            suffix=suffix,
+            delete=False
+        ) as tmp_file:
+            tmp_file.write(uploaded_file.getbuffer())
+            return tmp_file.name  # Returns full path
     except Exception as e:
         st.error(f"Error saving file: {e}")
         return None
