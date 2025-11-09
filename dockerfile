@@ -20,11 +20,12 @@ COPY . .
 # Create outputs directory for models
 RUN mkdir -p outputs
 
-# Expose Streamlit port
+# Expose port (default 8501, can be overridden by PORT env var)
 EXPOSE 8501
 
-# Health check
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
-
-# Run Streamlit
-CMD ["streamlit", "run", "streamlit_app.py", "--logger.level=info"]
+# Run Streamlit with proper configuration for production
+CMD streamlit run streamlit_app.py \
+    --server.port=${PORT:-8501} \
+    --server.address=0.0.0.0 \
+    --server.headless=true \
+    --logger.level=info
