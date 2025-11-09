@@ -53,8 +53,22 @@ class ModelEnsembleAgent:
                 checkpoint = torch.load(checkpoint_path, map_location=self.device)
                 state_dict = checkpoint.get('model_state_dict', checkpoint)
                 
-                # FIX: Use strict=False to bypass common RuntimeError due to classifier size mismatches
-                model.load_state_dict(state_dict, strict=False)
+                # FIX: Filter out incompatible head layers that have size mismatches
+                # This handles cases where checkpoint was trained with different head architecture
+                model_state = model.state_dict()
+                filtered_state_dict = {}
+                for key, value in state_dict.items():
+                    if key in model_state and model_state[key].shape == value.shape:
+                        filtered_state_dict[key] = value
+                    elif key not in model_state:
+                        # Key doesn't exist in current model, skip it
+                        pass
+                    else:
+                        # Shape mismatch, skip this layer (usually head layers)
+                        print(f"    (Skipping layer '{key}' due to shape mismatch: {value.shape} vs {model_state[key].shape})")
+                
+                # Load only compatible layers
+                model.load_state_dict(filtered_state_dict, strict=False)
 
                 model.eval()
                 self.models[name] = model
@@ -96,10 +110,16 @@ class ModelEnsembleAgent:
                 "confidence": float(pred_conf)
             }
 
-        # Ensemble Decision (Soft Voting/Averaging)
-        avg_probs = np.mean(all_probs, axis=0)
-        ensemble_idx = np.argmax(avg_probs)
-        ensemble_confidence = avg_probs[ensemble_idx]
+        # Ensemble Decision (Weighted Voting)
+        # Use max confidence from each model as the weight
+        weights = np.array([np.max(probs) for probs in all_probs])
+        # Normalize weights
+        weights = weights / np.sum(weights)
+        
+        # Weighted average of probabilities
+        weighted_avg_probs = np.average(all_probs, axis=0, weights=weights)
+        ensemble_idx = np.argmax(weighted_avg_probs)
+        ensemble_confidence = weighted_avg_probs[ensemble_idx]
         ensemble_class = self.class_names[ensemble_idx]
 
         return {

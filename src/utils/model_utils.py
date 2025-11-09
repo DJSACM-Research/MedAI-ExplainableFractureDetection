@@ -27,4 +27,28 @@ def get_model(name: str, num_classes: int, pretrained: bool = True):
         model.classifier = nn.Linear(model.classifier.in_features, num_classes)
         return model
     
+    if name.startswith('mobilenet'):
+        model = timm.create_model('mobilenetv2_100', pretrained=pretrained)
+        if hasattr(model, 'reset_classifier'):
+            model.reset_classifier(num_classes=num_classes)
+        else:
+            model.classifier = nn.Linear(model.classifier.in_features, num_classes)
+        return model
+    
+    if name.startswith('efficientnet'):
+        model = timm.create_model('efficientnet_b0', pretrained=pretrained)
+        if hasattr(model, 'reset_classifier'):
+            model.reset_classifier(num_classes=num_classes)
+        else:
+            model.classifier = nn.Linear(model.classifier.in_features, num_classes)
+        return model
+    
+    if name.startswith('maxvit'):
+        model = timm.create_model('maxvit_tiny_tf_224', pretrained=pretrained)
+        if hasattr(model, 'reset_classifier'):
+            model.reset_classifier(num_classes=num_classes)
+        else:
+            model.head.fc = nn.Linear(model.head.fc.in_features, num_classes)
+        return model
+    
     raise ValueError(f'Unknown model: {name}')

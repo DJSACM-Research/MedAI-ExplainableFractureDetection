@@ -132,7 +132,27 @@ Medical History: {self.patient_history.get('history')}
 
 
 # ============================================================================
-# --- 2. Workflow Functions ---
+# --- 2. Helper Functions ---
+# ============================================================================
+
+def save_uploaded_file(uploaded_file) -> str:
+    """Save uploaded file to temp location and return path."""
+    if uploaded_file is None:
+        return None
+    
+    try:
+        import tempfile
+        # Create a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+            tmp_file.write(uploaded_file.getbuffer())
+            return tmp_file.name
+    except Exception as e:
+        st.error(f"Error saving file: {e}")
+        return None
+
+
+# ============================================================================
+# --- 3. Workflow Functions ---
 # ============================================================================
 
 def run_diagnostic_agent(image_path: str) -> Dict[str, Any]:
@@ -183,7 +203,17 @@ def run_educational_agent(diagnosis_result: Dict[str, Any], explanation_text: st
     """Run the educational agent to translate diagnosis."""
     try:
         agent = EducationalAgent(doctor_name="your treating doctor")
-        result = agent.translate_to_layman_terms(diagnosis_result, explanation_text)
+        
+        # Map ensemble result format to educational agent format
+        # Ensemble uses: ensemble_prediction, ensemble_confidence
+        # EducationalAgent expects: predicted_class, confidence_score
+        mapped_result = {
+            "predicted_class": diagnosis_result.get("ensemble_prediction", "Unknown"),
+            "confidence_score": diagnosis_result.get("ensemble_confidence", 0.0),
+            "fracture_detected": diagnosis_result.get("fracture_detected", True)
+        }
+        
+        result = agent.translate_to_layman_terms(mapped_result, explanation_text)
         return result
     except Exception as e:
         return {"error": str(e)}
@@ -194,18 +224,22 @@ def run_explainability_agent(diagnosis_result: Dict[str, Any]) -> str:
     try:
         agent = ExplainabilityAgent(class_names=CLASS_NAMES, body_part="bone")
         
+        # Map ensemble result format to explainability agent format
+        # Ensemble uses: ensemble_prediction, ensemble_confidence
+        # ExplainabilityAgent expects: predicted_class, confidence_score
+        mapped_result = {
+            "predicted_class": diagnosis_result.get("ensemble_prediction", "Unknown"),
+            "confidence_score": diagnosis_result.get("ensemble_confidence", 0.0),
+            "fracture_detected": diagnosis_result.get("fracture_detected", True)
+        }
+        
         # Generate a random heatmap for demonstration
         heatmap = generate_random_heatmap()
-        centroid = calculate_heatmap_centroid(heatmap)
         
-        predicted_class = diagnosis_result.get("predicted_class", "Unknown")
-        confidence = diagnosis_result.get("confidence_score", 0.0)
-        
+        # Call with correct parameters
         explanation = agent.generate_explanation(
-            predicted_class=predicted_class,
-            confidence=confidence,
-            centroid=centroid,
-            fracture_detected=diagnosis_result.get("fracture_detected", False)
+            diagnosis_result=mapped_result,
+            cam_array=heatmap
         )
         return explanation
     except Exception as e:
@@ -275,6 +309,10 @@ def main():
             "history": "No major past issues, but has mild osteoporosis."
         }
     
+    # Initialize workflow results storage
+    if "workflow_result" not in st.session_state:
+        st.session_state.workflow_result = None
+    
     # --- Create Tabs ---
     tab1, tab2, tab3, tab4, tab5 = st.tabs(
         ["🏥 Single Agents", "⚙️ Complete Workflow", "💬 Patient Chat", "📋 Workflow Details", "ℹ️ About"]
@@ -304,7 +342,8 @@ def main():
                 if image_file and st.button("Run Diagnostic Agent"):
                     st.info("Note: Running this requires a valid model checkpoint at ./outputs/best_swin.pth")
                     with st.spinner("Running diagnostic agent..."):
-                        result = run_diagnostic_agent(image_file)
+                        image_path = save_uploaded_file(image_file)
+                        result = run_diagnostic_agent(image_path)
                         st.json(result)
             
             elif agent_choice == "Ensemble Agent":
@@ -315,7 +354,8 @@ def main():
                 if image_file and st.button("Run Ensemble Agent"):
                     st.info("Note: Running this requires model checkpoints in ./outputs/")
                     with st.spinner("Running ensemble agent..."):
-                        result = run_ensemble_agent(image_file)
+                        image_path = save_uploaded_file(image_file)
+                        result = run_ensemble_agent(image_path)
                         st.json(result)
             
             elif agent_choice == "Educational Agent":
@@ -385,7 +425,7 @@ def main():
             image_file = st.file_uploader("Upload X-ray image for full diagnosis", type=["jpg", "png", "jpeg"])
             
             if image_file:
-                st.image(image_file, caption="Uploaded Image", use_column_width=True)
+                st.image(image_file, caption="Uploaded Image", width='stretch')
         
         with col2:
             st.subheader("👤 Patient Information")
@@ -400,7 +440,11 @@ def main():
         if image_file and st.button("🚀 Run Complete Workflow", key="workflow"):
             st.info("Note: Running this requires all model checkpoints in ./outputs/")
             with st.spinner("Running complete diagnostic workflow..."):
-                workflow_result = run_complete_workflow(image_file)
+                image_path = save_uploaded_file(image_file)
+                workflow_result = run_complete_workflow(image_path)
+                
+                # Store workflow result in session state for use in other tabs
+                st.session_state.workflow_result = workflow_result
                 
                 if "error" in workflow_result:
                     st.error(f"❌ Error: {workflow_result['error']}")
@@ -441,65 +485,71 @@ def main():
         st.header("💬 Patient Q&A with AI Assistant")
         st.markdown("Ask questions about your fracture diagnosis (requires Ollama running)")
         
-        # Check for Ollama availability
-        ollama_available = False
-        try:
-            response = requests.get("http://localhost:11434", timeout=2)
-            ollama_available = response.status_code == 200
-        except:
-            ollama_available = False
-        
-        if not ollama_available:
-            st.warning("⚠️ Ollama server is not running. Please start Ollama to use the chat feature.")
-            st.info("Download Ollama from https://ollama.ai and run: ollama pull llama3")
+        # Check if workflow has been run
+        if st.session_state.workflow_result is None or "error" in st.session_state.workflow_result:
+            st.info("ℹ️ Please run the 'Complete Workflow' first to generate a diagnosis for the chat feature.")
         else:
-            # Sample medical summary
-            medical_summary = {
-                "Diagnosis": "Transverse",
-                "Ensemble_Confidence": "0.92",
-                "Type": "A clean break straight across the bone",
-                "Severity": "Moderate",
-                "Guidelines": [
-                    "Immobilization with cast or splint",
-                    "Regular X-rays to monitor healing",
-                    "Physical therapy after healing",
-                    "Pain management as needed"
-                ]
-            }
-            
+            # Check for Ollama availability
+            ollama_available = False
             try:
-                agent = PatientInteractionAgent(medical_summary, st.session_state.patient_context)
-                
-                # Initialize chat history
-                if "messages" not in st.session_state:
-                    st.session_state.messages = []
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": f"Hello! I'm your AI medical assistant. I've reviewed your diagnosis: **{medical_summary['Diagnosis']}**. How can I help answer your questions?"
-                    })
-                
-                # Display chat messages
-                for message in st.session_state.messages:
-                    with st.chat_message(message["role"]):
-                        st.markdown(message["content"])
-                
-                # Accept user input
-                if prompt := st.chat_input("Ask a question about your diagnosis..."):
-                    st.session_state.messages.append({"role": "user", "content": prompt})
-                    with st.chat_message("user"):
-                        st.markdown(prompt)
-                    
-                    with st.chat_message("assistant"):
-                        with st.spinner(f"Asking {OLLAMA_MODEL}..."):
-                            response = agent.get_response(prompt)
-                            st.markdown(response)
-                    
-                    st.session_state.messages.append({"role": "assistant", "content": response})
+                response = requests.get("http://localhost:11434", timeout=2)
+                ollama_available = response.status_code == 200
+            except:
+                ollama_available = False
             
-            except ConnectionError as e:
-                st.error(f"❌ Connection Error: {e}")
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
+            if not ollama_available:
+                st.warning("⚠️ Ollama server is not running. Please start Ollama to use the chat feature.")
+                st.info("Download Ollama from https://ollama.ai and run: ollama pull llama3")
+            else:
+                # Build medical summary from workflow results
+                ensemble_result = st.session_state.workflow_result.get("ensemble_result", {})
+                knowledge_result = st.session_state.workflow_result.get("knowledge_result", {})
+                
+                diagnosis = ensemble_result.get("ensemble_prediction", "Unknown")
+                confidence = ensemble_result.get("ensemble_confidence", 0.0)
+                
+                # Create medical summary from knowledge base
+                medical_summary = {
+                    "Diagnosis": diagnosis,
+                    "Ensemble_Confidence": f"{confidence:.2f}",
+                    "Type": knowledge_result.get("Type", "Unknown fracture type"),
+                    "Severity": knowledge_result.get("Severity", "Unknown"),
+                    "Guidelines": knowledge_result.get("Guidelines", [])
+                }
+                
+                try:
+                    agent = PatientInteractionAgent(medical_summary, st.session_state.patient_context)
+                    
+                    # Initialize chat history with diagnosis info
+                    if "messages" not in st.session_state:
+                        st.session_state.messages = []
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": f"Hello! I'm your AI medical assistant. I've reviewed your diagnosis: **{medical_summary['Diagnosis']}** (Confidence: {medical_summary['Ensemble_Confidence']}). How can I help answer your questions?"
+                        })
+                    
+                    # Display chat messages
+                    for message in st.session_state.messages:
+                        with st.chat_message(message["role"]):
+                            st.markdown(message["content"])
+                    
+                    # Accept user input
+                    if prompt := st.chat_input("Ask a question about your diagnosis..."):
+                        st.session_state.messages.append({"role": "user", "content": prompt})
+                        with st.chat_message("user"):
+                            st.markdown(prompt)
+                        
+                        with st.chat_message("assistant"):
+                            with st.spinner(f"Asking {OLLAMA_MODEL}..."):
+                                response = agent.get_response(prompt)
+                                st.markdown(response)
+                        
+                        st.session_state.messages.append({"role": "assistant", "content": response})
+                
+                except ConnectionError as e:
+                    st.error(f"❌ Connection Error: {e}")
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
     
     # ========================================================================
     # --- TAB 4: Workflow Details ---
