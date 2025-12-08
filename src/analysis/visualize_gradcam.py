@@ -194,12 +194,15 @@ def main():
     class_names = [c.strip() for c in args.class_names.split(',')]
     num_classes = len(class_names)
 
-    device_pref = detect_device()
+    device_pref = get_device()
     print('preferred device:', device_pref)
 
     model = get_model(args.model, num_classes, pretrained=False)
     ck = torch.load(args.checkpoint, map_location='cpu')
-    model.load_state_dict(ck['model_state_dict'])
+    if isinstance(ck, dict) and 'model_state_dict' in ck:
+        model.load_state_dict(ck['model_state_dict'])
+    else:
+        model.load_state_dict(ck)
 
     # We'll run forward on preferred device, but if backward (for CAM) fails on MPS we'll move to CPU for CAM computation
     model.to(device_pref)
@@ -225,7 +228,10 @@ def main():
         print('GradCAM init failed on preferred device; will try CPU. Error:', e)
         cam_device = torch.device('cpu')
         model_cpu = get_model(args.model, num_classes, pretrained=False)
-        model_cpu.load_state_dict(ck['model_state_dict'])
+        if isinstance(ck, dict) and 'model_state_dict' in ck:
+            model_cpu.load_state_dict(ck['model_state_dict'])
+        else:
+            model_cpu.load_state_dict(ck)
         model_cpu.to(cam_device)
         model_cpu.eval()
         gradcam = GradCAM(model_cpu, target_layer_name=args.target_layer)
@@ -272,7 +278,10 @@ def main():
                 # rebuild cpu model if needed
                 cpu_dev = torch.device('cpu')
                 model_cpu = get_model(args.model, num_classes, pretrained=False)
-                model_cpu.load_state_dict(ck['model_state_dict'])
+                if isinstance(ck, dict) and 'model_state_dict' in ck:
+                    model_cpu.load_state_dict(ck['model_state_dict'])
+                else:
+                    model_cpu.load_state_dict(ck)
                 model_cpu.to(cpu_dev); model_cpu.eval()
                 gradcam_cpu = GradCAM(model_cpu, target_layer_name=args.target_layer)
                 cam_true = gradcam_cpu(inp.to(cpu_dev), class_idx=true_lbl, device=cpu_dev)

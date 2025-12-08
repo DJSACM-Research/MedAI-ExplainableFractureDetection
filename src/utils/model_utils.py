@@ -1,11 +1,15 @@
 import torch.nn as nn
 import timm
 import torchvision.models as tvmodels
+from src.models.hypercolumn_densenet import HyperColumnCBAMDenseNet169
 
 def get_model(name: str, num_classes: int, pretrained: bool = True):
     """Loads and adapts model architecture."""
     name = name.lower()
     
+    if name == 'hypercolumn_densenet169':
+        return HyperColumnCBAMDenseNet169(num_classes=num_classes, pretrained=pretrained)
+
     if name.startswith('swin'):
         model = timm.create_model('swin_small_patch4_window7_224', pretrained=pretrained)
         if hasattr(model, 'reset_classifier'):

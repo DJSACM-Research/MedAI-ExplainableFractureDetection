@@ -44,7 +44,10 @@ def main():
 
     model = get_model(args.model, num_classes, pretrained=False)
     ck = torch.load(args.checkpoint, map_location='cpu')
-    model.load_state_dict(ck['model_state_dict'])
+    if isinstance(ck, dict) and 'model_state_dict' in ck:
+        model.load_state_dict(ck['model_state_dict'])
+    else:
+        model.load_state_dict(ck)
     model.to(device); model.eval()
 
     rows = load_csv(args.test_csv)

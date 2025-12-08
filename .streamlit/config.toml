@@ -12,7 +12,8 @@ showErrorDetails = false
 level = "info"
 
 [server]
-port = 8501
+port = 7860
+address = "0.0.0.0"
 headless = true
 runOnSave = true
 maxUploadSize = 500
