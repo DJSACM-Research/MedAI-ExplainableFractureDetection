@@ -540,10 +540,6 @@ python src/training/pipeline.py \
 3. **Validate Improvements**: Check if ensemble reduces errors on hard classes
 4. **Deploy Best Model(s)**: Use for diagnostic agent and chat app
 
----
-
-## 🔬 Research Context
-
 ### Related Work
 
 This system builds upon recent advances in:
@@ -555,21 +551,6 @@ This system builds upon recent advances in:
 
 3. **Multi-Agent Systems in Clinical Decision Support**  
    Topol, "High-performance medicine: the convergence of human and artificial intelligence" (Nature Medicine 2019)
-
-### Limitations & Future Work
-
-**Current Limitations:**
-- Dataset size (114 test samples) limits generalization
-- Oblique and Transverse classes have low recall (26.1%, 43.5%)
-- No multi-view X-ray fusion (AP + Lateral projections)
-- Manual hyperparameter tuning (no AutoML)
-
-**Planned Improvements:**
-1. **Data Augmentation**: CLAHE, Mixup, CutMix for hard classes
-2. **Active Learning**: Query oracle (radiologist) for low-confidence predictions
-3. **Federated Learning**: Train on distributed hospital datasets without data sharing
-4. **3D Analysis**: Extend to CT scans with 3D CNNs
-5. **Real-Time Inference**: ONNX export for edge deployment
 
 ---
 
@@ -610,7 +591,7 @@ DJSCE ACM Research
 For questions, collaborations, or issues:
 
 - **GitHub Issues**: [Open an issue](https://github.com/DJSACM-Research/MedAI-ExplainableFractureDetection/issues)
-- **Email**: research@djsacm.org (replace with actual contact)
+- **Email**: acm.research2425@gmail.com
 - **Documentation**: See [`docs/REFERENCE.md`](docs/REFERENCE.md) for API details
 
 ---
@@ -624,23 +605,7 @@ For questions, collaborations, or issues:
 
 ---
 
-## 🎯 Roadmap
-
-- [x] Multi-agent architecture implementation
-- [x] Swin Transformer training pipeline
-- [x] Grad-CAM explainability
-- [x] Patient chat application (LLaMA 3)
-- [x] Ensemble learning system
-- [ ] Active learning loop
-- [ ] Multi-view X-ray fusion
-- [ ] ONNX export for production
-- [ ] Docker containerization
-- [ ] REST API for clinical integration
-- [ ] FHIR compliance for EHR systems
-
----
-
-**Last Updated:** November 2025  
+**Last Updated:** December 2025  
 **Version:** 1.0.0  
 **Status:** ✅ Research Code (Stable)
 
