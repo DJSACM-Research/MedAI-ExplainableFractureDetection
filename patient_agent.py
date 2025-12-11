@@ -19,7 +19,7 @@ class PatientInteractionAgent:
     1. Augmentation (building the system prompt using retrieved context).
     2. Generation (calling the local Llama 3 model).
     """
-    def __init__(self, medical_summary: Dict[str, Any], patient_history: Dict[str, Any]):
+    def __init__(self, medical_summary: Dict[str, Any], patient_history: Dict[str, Any], rag_sources: List[Dict[str, Any]] = None):
         
         # Ensure LLM Connection is working
         try:
@@ -29,6 +29,7 @@ class PatientInteractionAgent:
 
         self.medical_summary = medical_summary
         self.patient_history = patient_history
+        self.rag_sources = rag_sources or []
         self.system_prompt = self._build_system_prompt()
 
 
@@ -39,30 +40,44 @@ class PatientInteractionAgent:
         """
         
         # Format Guidelines for clear insertion into the prompt
-        guidelines = "\n- ".join(self.medical_summary.get('Guidelines', ["No specific guidelines available."]))
+        guidelines = "\n- ".join(self.medical_summary.get('Treatment_Guidelines', ["No specific guidelines available."]))
+
+        # Format RAG sources for inclusion in prompt
+        rag_context = ""
+        if self.rag_sources:
+            rag_context = "\n\n--- RETRIEVED MEDICAL KNOWLEDGE (RAG Sources) ---\n"
+            for i, source in enumerate(self.rag_sources, 1):
+                rag_context += f"\n[{i}] {source.get('title', 'Unknown')} ({source.get('category', 'N/A')})\n"
+                rag_context += f"{source.get('content', '')}\n"
 
         return f"""
-        You are a highly compassionate, clear, and professional medical assistant. Your goal is to answer patient questions
-        in natural language based ONLY on the following diagnostic information and patient history.
+        You are a knowledgeable and compassionate medical assistant specializing in fracture care. Your goal is to provide 
+        DETAILED, INFORMATIVE answers based on the diagnostic information, patient history, and retrieved medical knowledge below.
         
         RULES:
-        1. Maintain a reassuring, non-technical, and empathetic tone suitable for a patient.
-        2. Keep answers concise and address the patient's underlying concern.
-        3. ALWAYS conclude your answer by advising the patient to consult their orthopedic specialist or doctor 
-           for final treatment decisions and personalized advice.
+        1. Be SPECIFIC and EDUCATIONAL - explain medical concepts clearly using the provided context.
+        2. Provide ACTIONABLE information from the treatment guidelines (e.g., expected recovery time, what treatments involve, what to expect).
+        3. Reference specific details from the retrieved knowledge sources to give thorough, grounded answers.
+        4. Use patient-friendly language but don't oversimplify - patients want to understand their condition.
+        5. Structure longer answers with clear sections if helpful.
+        6. Only mention consulting a doctor ONCE at the very end of your response, briefly.
+        7. DO NOT repeatedly say "consult your doctor" or "seek professional help" throughout the response - say it only once at the end.
+        8. Focus 90% of your response on being informative and educational about the condition.
         
-        --- DIAGNOSTIC INFORMATION (Your RAG Context) ---
+        --- DIAGNOSTIC INFORMATION ---
         Diagnosis: {self.medical_summary.get('Diagnosis')} (Confidence: {self.medical_summary.get('Ensemble_Confidence')})
-        Definition: {self.medical_summary.get('Type')}
-        Severity: {self.medical_summary.get('Severity')}
+        ICD Code: {self.medical_summary.get('ICD_Code', 'N/A')}
+        Definition: {self.medical_summary.get('Type_Definition')}
+        Severity: {self.medical_summary.get('Severity_Rating')}
         General Treatment Guidelines: 
-        {guidelines}
-        Prognosis Note: {self.medical_summary.get('Prognosis', 'N/A')}
+        - {guidelines}
+        Prognosis Note: {self.medical_summary.get('Long_Term_Prognosis', 'N/A')}
         
         --- PATIENT HISTORY ---
         Age: {self.patient_history.get('age')}
         Gender: {self.patient_history.get('gender')}
         Past History: {self.patient_history.get('history')}
+        {rag_context}
         """
 
 
@@ -97,22 +112,81 @@ class PatientInteractionAgent:
 # --- 2. Streamlit Application Logic (The Main Runner - Combines R and AG) ---
 # ----------------------------------------------------------------------
 
+# Available diagnoses from knowledge base
+AVAILABLE_DIAGNOSES = [
+    "Comminuted",
+    "Oblique Displaced", 
+    "Healthy",
+    "Transverse",
+    "Spiral",
+    "Greenstick",
+    "Impacted",
+    "Pathologic"
+]
+
 def main():
     st.set_page_config(page_title="Fracture AI Patient Chat (Full RAG)", layout="wide")
     st.title("🦴 AI Medical Assistant for Fracture Patients (Full RAG Pipeline)")
     st.markdown("---")
 
-    # --- SIMULATED INPUTS (Output from Classification Agent) ---
-    # These values drive the entire RAG cycle
-    classification_result = {
-        "ensemble_prediction": "Comminuted", # This must match a key in the Knowledge Base
-        "ensemble_confidence": 0.92
-    }
-    patient_context = {
-        "age": 78,
-        "gender": "Male",
-        "history": "Previous heart surgery 5 years ago. No known bone issues."
-    }
+    # --- INPUT SECTION: Diagnosis & Patient Info ---
+    st.subheader("📋 Input Diagnosis & Patient Information")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Diagnosis Information**")
+        selected_diagnosis = st.selectbox(
+            "Fracture Type",
+            options=AVAILABLE_DIAGNOSES,
+            index=0,
+            help="Select the diagnosed fracture type from the classification model"
+        )
+        confidence = st.slider(
+            "Ensemble Confidence",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.92,
+            step=0.01,
+            help="Confidence score from the classification ensemble"
+        )
+    
+    with col2:
+        st.markdown("**Patient Information**")
+        age = st.number_input("Age", min_value=1, max_value=120, value=78)
+        gender = st.selectbox("Gender", options=["Male", "Female", "Other"], index=0)
+        history = st.text_area(
+            "Medical History",
+            value="Previous heart surgery 5 years ago. No known bone issues.",
+            help="Enter relevant medical history"
+        )
+    
+    # Button to start/update the session
+    if st.button("🔍 Start RAG Session", type="primary"):
+        # Clear previous messages when inputs change
+        st.session_state.messages = []
+        st.session_state.inputs_confirmed = True
+        st.session_state.classification_result = {
+            "ensemble_prediction": selected_diagnosis,
+            "ensemble_confidence": confidence
+        }
+        st.session_state.patient_context = {
+            "age": age,
+            "gender": gender,
+            "history": history
+        }
+        st.rerun()
+    
+    st.markdown("---")
+    
+    # Check if inputs have been confirmed
+    if not st.session_state.get("inputs_confirmed", False):
+        st.info("👆 Configure the diagnosis and patient information above, then click **Start RAG Session** to begin.")
+        return
+    
+    # Use stored values from session state
+    classification_result = st.session_state.classification_result
+    patient_context = st.session_state.patient_context
     
     # --- RAG INITIALIZATION ---
     
@@ -132,9 +206,19 @@ def main():
         st.error(f"Error during retrieval: {e}")
         return
 
+    # 1b. Retrieve RAG sources for richer context
+    try:
+        rag_sources = knowledge_agent.retrieve_sources(
+            query=f"{classification_result['ensemble_prediction']} fracture treatment diagnosis",
+            top_k=3
+        )
+    except Exception as e:
+        st.warning(f"Could not retrieve additional RAG sources: {e}")
+        rag_sources = []
+
     # 2. Initialize Interaction Agent (Augmentation & Generation)
     try:
-        agent = PatientInteractionAgent(medical_summary, patient_context)
+        agent = PatientInteractionAgent(medical_summary, patient_context, rag_sources)
     except ConnectionError as e:
         st.error(f"❌ Connection Error: {e}")
         st.info("Please ensure the Ollama application is running and the Llama 3 model is pulled.")
@@ -148,10 +232,20 @@ def main():
         st.header("Diagnosis Context (RAG Source)")
         st.caption(f"LLM Model: **{OLLAMA_MODEL}** (via Ollama)")
         st.metric("Diagnosis", medical_summary["Diagnosis"])
-        st.metric("Severity", medical_summary["Severity"])
+        st.metric("Severity", medical_summary["Severity_Rating"])
+        st.metric("ICD Code", medical_summary.get("ICD_Code", "N/A"))
         st.subheader("General Guidelines")
-        for g in medical_summary["Guidelines"]:
+        for g in medical_summary["Treatment_Guidelines"]:
             st.caption(f"• {g}")
+        
+        # Display retrieved RAG sources
+        if rag_sources:
+            st.subheader("📚 Retrieved Knowledge Sources")
+            for source in rag_sources:
+                with st.expander(f"📄 {source.get('title', 'Unknown')}"):
+                    st.caption(f"**Category:** {source.get('category', 'N/A')}")
+                    st.caption(f"**Use Case:** {source.get('use_case', 'N/A')}")
+        
         st.subheader("Patient Summary")
         st.json(patient_context)
         st.markdown("---")
