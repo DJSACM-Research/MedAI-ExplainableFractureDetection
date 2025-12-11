@@ -5,9 +5,10 @@ import json
 from typing import Dict, Any, List
 from knowledge_agent import KnowledgeAgent # Import the Retrieval Agent
 
-# --- Configuration for Ollama ---
-OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3" # Ensure you have pulled this model using 'ollama pull llama3'
+# --- Configuration for OpenRouter ---
+OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_API_KEY = st.secrets.get("openrouter_api_key", os.environ.get("OPENROUTER_API_KEY", ""))
+OPENROUTER_MODEL = st.secrets.get("openrouter_model", "meta-llama/llama-3.2-3b-instruct:free")
 
 # ----------------------------------------------------------------------
 # --- 1. PatientInteractionAgent (The Augmentation & Generation Component) ---
@@ -17,15 +18,13 @@ class PatientInteractionAgent:
     """
     Handles the RAG process:
     1. Augmentation (building the system prompt using retrieved context).
-    2. Generation (calling the local Llama 3 model).
+    2. Generation (calling OpenRouter API for LLM responses).
     """
     def __init__(self, medical_summary: Dict[str, Any], patient_history: Dict[str, Any], rag_sources: List[Dict[str, Any]] = None):
         
-        # Ensure LLM Connection is working
-        try:
-            requests.get("http://localhost:11434", timeout=5)
-        except requests.exceptions.ConnectionError:
-             raise ConnectionError("Ollama server is not running. Please start Ollama.")
+        # Ensure OpenRouter API key is configured
+        if not OPENROUTER_API_KEY:
+            raise ConnectionError("OpenRouter API key not configured. Please set it in secrets.toml or as OPENROUTER_API_KEY environment variable.")
 
         self.medical_summary = medical_summary
         self.patient_history = patient_history
@@ -82,30 +81,52 @@ class PatientInteractionAgent:
 
 
     def get_response(self, query: str) -> str:
-        """Performs the Generation step (LLM Call)."""
+        """Performs the Generation step (LLM Call via OpenRouter)."""
         
-        # The full prompt includes the augmented context (system_prompt) and the user query
-        full_prompt = f"{self.system_prompt}\n\nPATIENT QUERY: {query}"
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://medai-fracture-detection.streamlit.app",
+            "X-Title": "MedAI Fracture Detection"
+        }
         
         payload = {
-            "model": OLLAMA_MODEL,
-            "prompt": full_prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.1 # Low temperature for factual responses
-            }
+            "model": OPENROUTER_MODEL,
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": query}
+            ],
+            "temperature": 0.1  # Low temperature for factual responses
         }
 
-        try:
-            response = requests.post(OLLAMA_ENDPOINT, json=payload, timeout=300)
-            response.raise_for_status() 
-            data = response.json()
-            return data.get("response", "Error: Could not extract response from Ollama data.")
+        # Retry logic with exponential backoff for rate limits
+        max_retries = 3
+        base_delay = 2  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(OPENROUTER_ENDPOINT, headers=headers, json=payload, timeout=300)
+                response.raise_for_status()
+                data = response.json()
+                return data.get("choices", [{}])[0].get("message", {}).get("content", "Error: Could not extract response from OpenRouter.")
 
-        except requests.exceptions.RequestException as e:
-            return f"Error communicating with Ollama: {e}. Check if Llama 3 model is pulled and running."
-        except Exception as e:
-            return f"An unexpected error occurred: {e}"
+            except requests.exceptions.HTTPError as e:
+                if response.status_code == 401:
+                    return "Error: Invalid OpenRouter API key. Please check your configuration."
+                elif response.status_code == 429:
+                    if attempt < max_retries - 1:
+                        import time
+                        delay = base_delay * (2 ** attempt)  # Exponential backoff: 2, 4, 8 seconds
+                        time.sleep(delay)
+                        continue
+                    return "Error: Rate limit exceeded. The free tier has limited requests. Please wait a moment and try again."
+                return f"Error communicating with OpenRouter: {e}"
+            except requests.exceptions.RequestException as e:
+                return f"Error communicating with OpenRouter: {e}. Please check your internet connection."
+            except Exception as e:
+                return f"An unexpected error occurred: {e}"
+        
+        return "Error: Failed to get response after multiple retries."
 
 
 # ----------------------------------------------------------------------
@@ -221,7 +242,7 @@ def main():
         agent = PatientInteractionAgent(medical_summary, patient_context, rag_sources)
     except ConnectionError as e:
         st.error(f"❌ Connection Error: {e}")
-        st.info("Please ensure the Ollama application is running and the Llama 3 model is pulled.")
+        st.info("Please configure your OpenRouter API key in .streamlit/secrets.toml or set the OPENROUTER_API_KEY environment variable.")
         return
     except Exception as e:
         st.error(f"An unexpected error occurred during setup: {e}")
@@ -230,7 +251,7 @@ def main():
     # --- Sidebar for Context Display (Visualizing the RAG Source) ---
     with st.sidebar:
         st.header("Diagnosis Context (RAG Source)")
-        st.caption(f"LLM Model: **{OLLAMA_MODEL}** (via Ollama)")
+        st.caption(f"LLM Model: **{OPENROUTER_MODEL}** (via OpenRouter)")
         st.metric("Diagnosis", medical_summary["Diagnosis"])
         st.metric("Severity", medical_summary["Severity_Rating"])
         st.metric("ICD Code", medical_summary.get("ICD_Code", "N/A"))
@@ -268,7 +289,7 @@ def main():
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner(f"Asking {OLLAMA_MODEL}..."):
+            with st.spinner(f"Asking {OPENROUTER_MODEL}..."):
                 # 3. Generation Step
                 response = agent.get_response(prompt)
                 st.markdown(response)

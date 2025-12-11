@@ -25,7 +25,7 @@ MedAI is designed to assist healthcare professionals in diagnosing bone fracture
 - 🎯 **Weighted Voting** with priority for specialized HyperColumn models on specific fracture types
 - 🔥 **Grad-CAM Visualizations** showing exactly where the AI focuses
 - 📚 **RAG Knowledge Base** powered by ChromaDB for medical information retrieval
-- 💬 **LLM-Powered Chat** for patient Q&A using Ollama/Llama3
+- 💬 **LLM-Powered Chat** for patient Q&A using OpenRouter API
 - 🏥 **Patient-Friendly Explanations** translating medical jargon
 
 ---
@@ -40,14 +40,14 @@ MedAI is designed to assist healthcare professionals in diagnosing bone fracture
 
 ### Agent Descriptions
 
-| Agent                         | Purpose                                                    | Key Technology                     |
-| ----------------------------- | ---------------------------------------------------------- | ---------------------------------- |
-| **Diagnostic Agent**          | Single model inference for quick classification            | PyTorch, timm                      |
-| **Ensemble Agent**            | Combines 9 models with intelligent weighted voting         | Soft voting, weighted averaging    |
-| **Explainability Agent**      | Generates visual explanations of model decisions           | Grad-CAM, heatmap overlays         |
-| **Educational Agent**         | Translates technical findings to patient-friendly language | Template-based NLG                 |
-| **Knowledge Agent**           | Retrieves relevant medical information                     | ChromaDB, RAG, embeddings          |
-| **Patient Interaction Agent** | Handles patient Q&A in conversational format               | Ollama, Llama3, prompt engineering |
+| Agent                         | Purpose                                                    | Key Technology                             |
+| ----------------------------- | ---------------------------------------------------------- | ------------------------------------------ |
+| **Diagnostic Agent**          | Single model inference for quick classification            | PyTorch, timm                              |
+| **Ensemble Agent**            | Combines 9 models with intelligent weighted voting         | Soft voting, weighted averaging            |
+| **Explainability Agent**      | Generates visual explanations of model decisions           | Grad-CAM, heatmap overlays                 |
+| **Educational Agent**         | Translates technical findings to patient-friendly language | Template-based NLG                         |
+| **Knowledge Agent**           | Retrieves relevant medical information                     | ChromaDB, RAG, embeddings                  |
+| **Patient Interaction Agent** | Handles patient Q&A in conversational format               | OpenRouter API, Llama3, prompt engineering |
 
 ---
 
@@ -206,7 +206,7 @@ MedAI-ExplainableFractureDetection/
 
 - Python 3.11+
 - CUDA 11.8+ (optional, for GPU acceleration)
-- Ollama (optional, for LLM chat functionality)
+- OpenRouter API key (for LLM chat functionality) - Get one at https://openrouter.ai/keys
 
 ### Setup
 
@@ -223,17 +223,20 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Optional: Setup Ollama for Chat
+### Setup OpenRouter API for Chat
+
+1. Get an API key from [OpenRouter](https://openrouter.ai/keys)
+2. Add it to `.streamlit/secrets.toml`:
+
+```toml
+openrouter_api_key = "your-openrouter-api-key-here"
+openrouter_model = "meta-llama/llama-3.2-3b-instruct:free"
+```
+
+Or set as environment variable:
 
 ```bash
-# Install Ollama (macOS)
-brew install ollama
-
-# Start Ollama server
-ollama serve
-
-# Pull Llama3 model
-ollama pull llama3
+export OPENROUTER_API_KEY="your-openrouter-api-key-here"
 ```
 
 ---
@@ -383,11 +386,11 @@ explanation = agent.generate_explanation(diagnosis_result, cam_array)
 
 ### Environment Variables
 
-| Variable          | Description           | Default                               |
-| ----------------- | --------------------- | ------------------------------------- |
-| `OLLAMA_ENDPOINT` | Ollama API endpoint   | `http://localhost:11434/api/generate` |
-| `OLLAMA_MODEL`    | LLM model name        | `llama3`                              |
-| `CHROMA_DB_PATH`  | ChromaDB storage path | `./chroma_db`                         |
+| Variable             | Description           | Default                                 |
+| -------------------- | --------------------- | --------------------------------------- |
+| `OPENROUTER_API_KEY` | OpenRouter API key    | (required for chat)                     |
+| `OPENROUTER_MODEL`   | LLM model name        | `meta-llama/llama-3.2-3b-instruct:free` |
+| `CHROMA_DB_PATH`     | ChromaDB storage path | `./chroma_db`                           |
 
 ### Model Weights
 
@@ -417,7 +420,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Grad-CAM** - Visual explanations from deep networks
 - **ChromaDB** - Vector database for embeddings
 - **Streamlit** - Web application framework
-- **Ollama** - Local LLM inference
+- **OpenRouter** - LLM API gateway
 
 ---
 

@@ -274,9 +274,10 @@ MODEL_CONFIGS = {
     "hypercolumn_densenet169_old": "custom",
 }
 
-# Ollama configuration
-OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3"
+# OpenRouter configuration
+OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_API_KEY = st.secrets.get("openrouter_api_key", os.environ.get("OPENROUTER_API_KEY", ""))
+OPENROUTER_MODEL = st.secrets.get("openrouter_model", "meta-llama/llama-3.2-3b-instruct:free")
 
 # ChromaDB configuration
 CHROMA_DB_PATH = "./chroma_db"
@@ -877,28 +878,56 @@ Medical History: {self.patient_history.get('history', 'None provided')}
 """
     
     def get_response(self, query: str) -> str:
-        """Gets LLM response for a patient query."""
+        """Gets LLM response for a patient query via OpenRouter."""
         if not REQUESTS_AVAILABLE:
             return "Chat functionality requires the requests library."
         
-        full_prompt = f"{self.system_prompt}\n\nPATIENT QUERY: {query}"
+        if not OPENROUTER_API_KEY:
+            return "⚠️ OpenRouter API key not configured. Please set it in secrets.toml or as OPENROUTER_API_KEY environment variable."
         
-        payload = {
-            "model": OLLAMA_MODEL,
-            "prompt": full_prompt,
-            "stream": False,
-            "options": {"temperature": 0.1}
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://medai-fracture-detection.streamlit.app",
+            "X-Title": "MedAI Fracture Detection"
         }
         
-        try:
-            response = requests.post(OLLAMA_ENDPOINT, json=payload, timeout=120)
-            response.raise_for_status()
-            data = response.json()
-            return data.get("response", "Could not get response from LLM.")
-        except requests.exceptions.ConnectionError:
-            return "⚠️ Cannot connect to Ollama. Please ensure Ollama is running with `ollama serve` and the llama3 model is pulled."
-        except Exception as e:
-            return f"⚠️ Error: {e}"
+        payload = {
+            "model": OPENROUTER_MODEL,
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": query}
+            ],
+            "temperature": 0.1
+        }
+        
+        # Retry logic with exponential backoff for rate limits
+        max_retries = 3
+        base_delay = 2  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(OPENROUTER_ENDPOINT, headers=headers, json=payload, timeout=120)
+                response.raise_for_status()
+                data = response.json()
+                return data.get("choices", [{}])[0].get("message", {}).get("content", "Could not get response from LLM.")
+            except requests.exceptions.ConnectionError:
+                return "⚠️ Cannot connect to OpenRouter API. Please check your internet connection."
+            except requests.exceptions.HTTPError as e:
+                if response.status_code == 401:
+                    return "⚠️ Invalid OpenRouter API key. Please check your configuration."
+                elif response.status_code == 429:
+                    if attempt < max_retries - 1:
+                        import time
+                        delay = base_delay * (2 ** attempt)  # Exponential backoff: 2, 4, 8 seconds
+                        time.sleep(delay)
+                        continue
+                    return "⚠️ Rate limit exceeded. The free tier has limited requests. Please wait a moment and try again."
+                return f"⚠️ API Error: {e}"
+            except Exception as e:
+                return f"⚠️ Error: {e}"
+        
+        return "⚠️ Failed to get response after multiple retries."
 
 
 # ============================================================================
