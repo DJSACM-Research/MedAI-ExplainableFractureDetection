@@ -26,10 +26,9 @@ The system classifies X-ray images into 8 categories:
 ## Project Structure
 
 ```
-├── app.py                      # Main Streamlit application
-├── requirements.txt            # Python dependencies
 ├── src/
 │   └── medai/
+│       ├── app.py              # Main Streamlit application
 │       ├── agents/             # AI agents for various tasks
 │       │   ├── diagnostic_agent.py
 │       │   ├── educational_agent.py
@@ -50,7 +49,8 @@ The system classifies X-ray images into 8 categories:
 ├── data/                       # Dataset files
 ├── notebooks/                  # Jupyter notebooks for experiments
 ├── tests/                      # Unit and integration tests
-└── chroma_db/                  # Vector database for RAG
+├── chroma_db/                  # Vector database for RAG
+└── requirements.txt            # Python dependencies
 ```
 
 ## Installation
@@ -73,7 +73,7 @@ pip install -r requirements.txt
 ### Running the Application
 
 ```bash
-streamlit run app.py
+streamlit run src/medai/app.py
 ```
 
 ### Model Architectures
