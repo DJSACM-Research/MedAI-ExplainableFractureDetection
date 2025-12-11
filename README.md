@@ -9,6 +9,10 @@
 
 A comprehensive medical imaging AI system for bone fracture detection using deep learning, featuring a **multi-agent architecture**, **explainable AI (XAI)** capabilities, and **RAG-powered knowledge retrieval**.
 
+<p align="center">
+  <img src="diagrams/graphic.png" alt="Futuristic AI Medical Diagnostic Workflow" width="100%">
+</p>
+
 ---
 
 ## 🎯 Overview
@@ -30,35 +34,9 @@ MedAI is designed to assist healthcare professionals in diagnosing bone fracture
 
 ### Multi-Agent Pipeline
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                        MedAI Multi-Agent System                                  │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐  │
-│  │  DIAGNOSTIC  │    │   ENSEMBLE   │    │EXPLAINABILITY│    │  EDUCATIONAL │  │
-│  │    AGENT     │───▶│    AGENT     │───▶│    AGENT     │───▶│    AGENT     │  │
-│  │              │    │              │    │              │    │              │  │
-│  │ Single Model │    │ 9 Models +   │    │  Grad-CAM    │    │  Patient     │  │
-│  │  Inference   │    │ Weighted Vote│    │ Heatmaps     │    │ Translation  │  │
-│  └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘  │
-│         │                   │                   │                   │          │
-│         └───────────────────┴───────────────────┴───────────────────┘          │
-│                                      │                                          │
-│                                      ▼                                          │
-│  ┌──────────────────────────────────────────────────────────────────────────┐  │
-│  │                         KNOWLEDGE AGENT                                   │  │
-│  │  ChromaDB Vector Store │ Medical KB │ ICD Codes │ Treatment Guidelines   │  │
-│  └──────────────────────────────────────────────────────────────────────────┘  │
-│                                      │                                          │
-│                                      ▼                                          │
-│  ┌──────────────────────────────────────────────────────────────────────────┐  │
-│  │                    PATIENT INTERACTION AGENT                              │  │
-│  │           LLM Chat (Ollama/Llama3) │ Context-Aware Q&A                   │  │
-│  └──────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="diagrams/flowchart.png" alt="AI-Powered Diagnostic Pipeline" width="100%">
+</p>
 
 ### Agent Descriptions
 
