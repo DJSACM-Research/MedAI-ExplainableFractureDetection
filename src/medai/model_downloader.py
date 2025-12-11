@@ -1,6 +1,6 @@
 """
 Model Downloader for MedAI Streamlit Deployment
-Downloads model weights from external storage on first run.
+Downloads model weights from Hugging Face Hub on first run.
 """
 
 import os
@@ -8,43 +8,61 @@ import streamlit as st
 import requests
 from pathlib import Path
 
-# Model configuration - Update these URLs after uploading models
-# Options: Google Drive, Hugging Face Hub, AWS S3, GitHub Releases
+# Hugging Face Hub configuration
+HF_REPO_ID = "ACM-Research-DJSCE/medai-fracture-models"
+HF_BASE_URL = f"https://huggingface.co/{HF_REPO_ID}/resolve/main"
+
+# Model configuration with Hugging Face URLs
 MODEL_REGISTRY = {
     "swin": {
         "filename": "best_swin.pth",
-        "size_mb": 186,
-        "url": "",  # Add your URL here
+        "size_mb": 195,
+        "url": f"{HF_BASE_URL}/best_swin.pth",
     },
     "densenet169": {
         "filename": "best_densenet169.pth",
-        "size_mb": 144,
-        "url": "",
+        "size_mb": 151,
+        "url": f"{HF_BASE_URL}/best_densenet169.pth",
     },
     "efficientnetv2": {
         "filename": "best_efficientnetv2.pth",
-        "size_mb": 46,
-        "url": "",
+        "size_mb": 49,
+        "url": f"{HF_BASE_URL}/best_efficientnetv2.pth",
     },
     "hypercolumn_cbam_densenet169": {
         "filename": "best_hypercolumn_cbam_densenet169.pth",
-        "size_mb": 60,
-        "url": "",
+        "size_mb": 63,
+        "url": f"{HF_BASE_URL}/best_hypercolumn_cbam_densenet169.pth",
     },
     "hypercolumn_cbam_densenet169_focal": {
         "filename": "best_hypercolumn_cbam_densenet169_focal.pth",
-        "size_mb": 60,
-        "url": "",
+        "size_mb": 63,
+        "url": f"{HF_BASE_URL}/best_hypercolumn_cbam_densenet169_focal.pth",
+    },
+    "hypercolumn_cbam_densenet169_old": {
+        "filename": "best_hypercolumn_cbam_densenet169_old.pth",
+        "size_mb": 63,
+        "url": f"{HF_BASE_URL}/best_hypercolumn_cbam_densenet169_old.pth",
+    },
+    "hypercolumn_densenet169": {
+        "filename": "best_hypercolumn_densenet169.pth",
+        "size_mb": 63,
+        "url": f"{HF_BASE_URL}/best_hypercolumn_densenet169.pth",
+    },
+    "hypercolumn_densenet169_old": {
+        "filename": "best_hypercolumn_densenet169_old.pth",
+        "size_mb": 63,
+        "url": f"{HF_BASE_URL}/best_hypercolumn_densenet169_old.pth",
     },
     "mobilenetv2": {
         "filename": "best_mobilenetv2.pth",
-        "size_mb": 26,
-        "url": "",
+        "size_mb": 27,
+        "url": f"{HF_BASE_URL}/best_mobilenetv2.pth",
     },
     "maxvit": {
         "filename": "best_maxvit.pth",
-        "size_mb": 349,
-        "url": "",
+        "size_mb": 366,
+        "url": f"{HF_BASE_URL}/best_maxvit.pth",
     },
 }
 
