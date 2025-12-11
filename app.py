@@ -99,21 +99,6 @@ class _DenseBlock(nn.ModuleDict):
         return torch.cat(features, 1)
 
 
-class _Transition(nn.Module):
-    """Transition layer between dense blocks (no pooling for hypercolumn)."""
-    def __init__(self, num_input_features, num_output_features):
-        super(_Transition, self).__init__()
-        self.norm = nn.BatchNorm2d(num_input_features)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv = nn.Conv2d(num_input_features, num_output_features, kernel_size=1, stride=1, bias=False)
-    
-    def forward(self, x):
-        x = self.norm(x)
-        x = self.relu(x)
-        x = self.conv(x)
-        return x
-
-
 class ChannelAttention(nn.Module):
     """Channel attention module for CBAM with shared MLP."""
     def __init__(self, in_planes, ratio=16):
@@ -164,107 +149,87 @@ class CBAM(nn.Module):
 class HypercolumnCBAMDenseNet(nn.Module):
     """
     Custom DenseNet169 with Hypercolumn fusion and CBAM attention.
-    Matches the exact architecture from training checkpoint.
+    
+    Architecture matches training checkpoint exactly:
+    - features.*     : Full DenseNet169 backbone
+    - init_conv.*    : Separate Conv2d(3,64) + BN (NOT a reference to features)
+    - db1-4, t1-3    : References to features.denseblock*, features.transition*
+    - norm_final     : Reference to features.norm5
+    - Hypercolumn fusion upsamples to final feature map size (7x7)
     """
     def __init__(self, num_classes=8, growth_rate=32, bn_size=4, drop_rate=0.0):
         super(HypercolumnCBAMDenseNet, self).__init__()
-        from collections import OrderedDict
+        import torchvision.models as models
         
-        # DenseNet169 block config: [6, 12, 32, 32]
-        block_config = (6, 12, 32, 32)
-        num_init_features = 64
+        # Use torchvision's DenseNet169 as backbone
+        densenet = models.densenet169(weights=None)
+        self.features = densenet.features
         
-        # Build features backbone (same as DenseNet169)
-        self.features = nn.Sequential(OrderedDict([
-            ('conv0', nn.Conv2d(3, num_init_features, kernel_size=7, stride=2, padding=3, bias=False)),
-            ('norm0', nn.BatchNorm2d(num_init_features)),
-            ('relu0', nn.ReLU(inplace=True)),
-            ('pool0', nn.MaxPool2d(kernel_size=3, stride=2, padding=1)),
-        ]))
-        
-        # Add dense blocks and transitions to features
-        num_features = num_init_features
-        for i, num_layers in enumerate(block_config):
-            block = _DenseBlock(
-                num_layers=num_layers,
-                num_input_features=num_features,
-                bn_size=bn_size,
-                growth_rate=growth_rate,
-                drop_rate=drop_rate
-            )
-            self.features.add_module(f'denseblock{i + 1}', block)
-            num_features = num_features + num_layers * growth_rate
-            if i != len(block_config) - 1:
-                trans = _Transition(num_input_features=num_features, num_output_features=num_features // 2)
-                self.features.add_module(f'transition{i + 1}', trans)
-                num_features = num_features // 2
-        
-        self.features.add_module('norm5', nn.BatchNorm2d(num_features))
-        
-        # init_conv: 7x7 Conv from RGB (3 channels) to 64 channels + BN
+        # init_conv is SEPARATE from features (has its own trained weights)
         self.init_conv = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
             nn.BatchNorm2d(64)
         )
         
-        # Custom dense blocks for hypercolumn feature processing
-        self.db1 = _DenseBlock(num_layers=6, num_input_features=64, bn_size=bn_size, growth_rate=growth_rate)
-        self.db2 = _DenseBlock(num_layers=12, num_input_features=128, bn_size=bn_size, growth_rate=growth_rate)
-        self.db3 = _DenseBlock(num_layers=32, num_input_features=256, bn_size=bn_size, growth_rate=growth_rate)
-        self.db4 = _DenseBlock(num_layers=32, num_input_features=640, bn_size=bn_size, growth_rate=growth_rate)
+        # Dense blocks are REFERENCES to features (share weights)
+        self.db1 = self.features.denseblock1
+        self.db2 = self.features.denseblock2
+        self.db3 = self.features.denseblock3
+        self.db4 = self.features.denseblock4
         
-        # Transition layers for hypercolumn (no pooling)
-        self.t1 = _Transition(num_input_features=256, num_output_features=128)
-        self.t2 = _Transition(num_input_features=512, num_output_features=256)
-        self.t3 = _Transition(num_input_features=1280, num_output_features=640)
+        # Transitions are REFERENCES to features (share weights, include AvgPool2d)
+        self.t1 = self.features.transition1
+        self.t2 = self.features.transition2
+        self.t3 = self.features.transition3
         
-        # Final normalization (1664 channels from db4)
-        self.norm_final = nn.BatchNorm2d(1664)
+        # norm_final is a REFERENCE to features.norm5 (share weights)
+        self.norm_final = self.features.norm5
         
-        # Hypercolumn fusion: 128 + 256 + 640 + 1664 = 2688 -> 1024
+        # Hypercolumn fusion: 1664 + 640 + 256 + 128 = 2688 -> 1024
         self.fusion_conv = nn.Conv2d(2688, 1024, kernel_size=1, bias=False)
         self.bn_fusion = nn.BatchNorm2d(1024)
         
         # CBAM attention
         self.cbam = CBAM(1024)
         
-        # Classifier
+        # Classifier with dropout (matches training)
         self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
+            nn.Dropout(0.5),
             nn.Linear(1024, num_classes)
         )
     
     def forward(self, x):
-        # Use init_conv to process raw RGB input
+        # Use init_conv (separate trained weights)
         x = self.init_conv(x)
         x = nn.functional.relu(x)
-        x = nn.functional.max_pool2d(x, kernel_size=3, stride=2, padding=1)
+        x = nn.functional.max_pool2d(x, kernel_size=3, stride=2, padding=1)  # 224->112->56
         
-        # Process through custom dense blocks
-        x1 = self.db1(x)
-        x1_t = self.t1(x1)
+        # Dense block 1 -> Transition 1
+        x = self.db1(x)       # 64->256 channels, 56x56
+        t1_out = self.t1(x)   # 256->128 channels, 56->28 (includes AvgPool2d)
         
-        x2 = self.db2(x1_t)
-        x2_t = self.t2(x2)
+        # Dense block 2 -> Transition 2
+        x = self.db2(t1_out)  # 128->512 channels, 28x28
+        t2_out = self.t2(x)   # 512->256 channels, 28->14 (includes AvgPool2d)
         
-        x3 = self.db3(x2_t)
-        x3_t = self.t3(x3)
+        # Dense block 3 -> Transition 3
+        x = self.db3(t2_out)  # 256->1280 channels, 14x14
+        t3_out = self.t3(x)   # 1280->640 channels, 14->7 (includes AvgPool2d)
         
-        x4 = self.db4(x3_t)
-        x4 = self.norm_final(x4)
+        # Dense block 4 -> Final norm
+        x = self.db4(t3_out)  # 640->1664 channels, 7x7
+        x_final = self.norm_final(x)  # 1664 channels, 7x7
         
-        # Upsample all to match x1_t size for hypercolumn
-        target_size = x1_t.shape[2:]
+        # Hypercolumn fusion - upsample all to match x_final size (7x7)
+        target_size = x_final.shape[2:]
+        t1_resized = nn.functional.interpolate(t1_out, size=target_size, mode='bilinear', align_corners=False)
+        t2_resized = nn.functional.interpolate(t2_out, size=target_size, mode='bilinear', align_corners=False)
+        t3_resized = nn.functional.interpolate(t3_out, size=target_size, mode='bilinear', align_corners=False)
         
-        f1 = x1_t
-        f2 = nn.functional.interpolate(x2_t, size=target_size, mode='bilinear', align_corners=False)
-        f3 = nn.functional.interpolate(x3_t, size=target_size, mode='bilinear', align_corners=False)
-        f4 = nn.functional.interpolate(x4, size=target_size, mode='bilinear', align_corners=False)
+        # Concatenate: 1664 + 640 + 256 + 128 = 2688 (order matters!)
+        hypercolumn = torch.cat([x_final, t3_resized, t2_resized, t1_resized], dim=1)
         
-        # Concatenate hypercolumn features
-        hypercolumn = torch.cat([f1, f2, f3, f4], dim=1)
-        
-        # Fusion
+        # Fusion: 2688 -> 1024
         x = self.fusion_conv(hypercolumn)
         x = self.bn_fusion(x)
         x = nn.functional.relu(x)
@@ -272,10 +237,12 @@ class HypercolumnCBAMDenseNet(nn.Module):
         # Apply CBAM attention
         x = self.cbam(x)
         
-        # Classify
-        x = self.classifier[0](x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier[1](x)
+        # Global average pooling
+        x = nn.functional.adaptive_avg_pool2d(x, 1)
+        x = torch.flatten(x, 1)  # Flatten to [batch, 1024]
+        
+        # Classify (through dropout + linear)
+        x = self.classifier(x)
         
         return x
 
@@ -297,9 +264,9 @@ MODEL_CONFIGS = {
     # Standard timm models
     "swin": "swin_small_patch4_window7_224",
     "densenet169": "densenet169",
-    "efficientnetv2": "tf_efficientnetv2_s",
+    "efficientnetv2": "efficientnet_b0",
     "mobilenetv2": "mobilenetv2_100",
-    "maxvit": "maxvit_rmlp_small_rw_224",
+    "maxvit": "maxvit_tiny_tf_224",
     # Hypercolumn variants (all use custom HypercolumnCBAMDenseNet architecture)
     "hypercolumn_cbam_densenet169": "custom",
     "hypercolumn_cbam_densenet169_focal": "custom",
