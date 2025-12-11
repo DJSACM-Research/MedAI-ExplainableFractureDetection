@@ -1,0 +1,7 @@
+# MedAI Production Requirements
+# Includes base + production-specific dependencies
+
+-r base.txt
+
+# Production optimizations
+gunicorn>=21.0.0

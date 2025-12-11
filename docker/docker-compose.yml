@@ -1,0 +1,38 @@
+services:
+  medai:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: medai-fracture-detection
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OLLAMA_HOST=host.docker.internal:11434
+    volumes:
+      - ../models:/app/models:ro
+      - ../data:/app/data:ro
+    networks:
+      - medai-net
+    restart: unless-stopped
+
+  # Optional: Uncomment to run Ollama in Docker
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama-server
+  #   ports:
+  #     - "11434:11434"
+  #   environment:
+  #     - OLLAMA_HOST=0.0.0.0:11434
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   networks:
+  #     - medai-net
+  #   restart: unless-stopped
+
+# volumes:
+#   ollama_data:
+
+networks:
+  medai-net:
+    driver: bridge
