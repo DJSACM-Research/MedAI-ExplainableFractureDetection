@@ -292,14 +292,19 @@ NUM_CLASSES = len(CLASS_NAMES)
 IMG_SIZE = 224
 
 # Model configurations (must match training architectures)
-# "hypercolumn_cbam_densenet169" uses custom HypercolumnCBAMDenseNet class
+# All hypercolumn variants use the custom HypercolumnCBAMDenseNet class
 MODEL_CONFIGS = {
+    # Standard timm models
     "swin": "swin_small_patch4_window7_224",
     "densenet169": "densenet169",
     "efficientnetv2": "tf_efficientnetv2_s",
     "mobilenetv2": "mobilenetv2_100",
     "maxvit": "maxvit_rmlp_small_rw_224",
-    "hypercolumn_cbam_densenet169": "custom"  # Handled by HypercolumnCBAMDenseNet class
+    # Hypercolumn variants (all use custom HypercolumnCBAMDenseNet architecture)
+    "hypercolumn_cbam_densenet169": "custom",
+    "hypercolumn_cbam_densenet169_focal": "custom",
+    "hypercolumn_densenet169": "custom",
+    "hypercolumn_densenet169_old": "custom",
 }
 
 # Ollama configuration
