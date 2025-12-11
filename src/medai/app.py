@@ -496,11 +496,48 @@ class DiagnosticAgent:
 class ModelEnsembleAgent:
     """Runs inference across multiple models and combines predictions."""
     
+    # Classes where hypercolumn models should get more weight
+    HYPERCOLUMN_PRIORITY_CLASSES = {"Oblique", "Oblique Displaced", "Transverse", "Transverse Displaced"}
+    # Weight for hypercolumn models when priority class is detected (3x to ensure dominance)
+    HYPERCOLUMN_WEIGHT = 3.0
+    # Weight for other models
+    DEFAULT_WEIGHT = 1.0
+    
     def __init__(self, models: Dict[str, nn.Module], class_names: List[str], device, img_size: int = 224):
         self.models = models
         self.class_names = class_names
         self.device = device
         self.transforms = get_transforms(img_size)
+    
+    def _is_hypercolumn_model(self, model_name: str) -> bool:
+        """Check if a model is a hypercolumn/column model."""
+        return "hypercolumn" in model_name.lower() or "cbam" in model_name.lower()
+    
+    def _get_weighted_average(self, all_probs: List[np.ndarray], model_names: List[str], 
+                               use_hypercolumn_priority: bool) -> np.ndarray:
+        """
+        Compute weighted average of probabilities.
+        
+        If use_hypercolumn_priority is True, hypercolumn models get more weight.
+        Otherwise, equal weights are used for all models.
+        """
+        weights = []
+        for name in model_names:
+            if use_hypercolumn_priority and self._is_hypercolumn_model(name):
+                weights.append(self.HYPERCOLUMN_WEIGHT)
+            else:
+                weights.append(self.DEFAULT_WEIGHT)
+        
+        # Normalize weights
+        weights = np.array(weights)
+        weights = weights / weights.sum()
+        
+        # Compute weighted average
+        weighted_probs = np.zeros_like(all_probs[0])
+        for prob, weight in zip(all_probs, weights):
+            weighted_probs += prob * weight
+        
+        return weighted_probs
     
     @torch.no_grad()
     def run_ensemble(self, image: Image.Image) -> Dict[str, Any]:
@@ -511,12 +548,14 @@ class ModelEnsembleAgent:
         input_tensor = self.transforms(image).unsqueeze(0).to(self.device)
         
         all_probs = []
+        model_names = []
         individual_predictions = {}
         
         for name, model in self.models.items():
             outputs = model(input_tensor)
             probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
             all_probs.append(probs)
+            model_names.append(name)
             
             pred_idx = np.argmax(probs)
             individual_predictions[name] = {
@@ -524,8 +563,16 @@ class ModelEnsembleAgent:
                 "confidence": float(probs[pred_idx])
             }
         
-        # Soft voting (average probabilities)
-        avg_probs = np.mean(all_probs, axis=0)
+        # First pass: compute equal-weighted average to determine likely class
+        equal_avg_probs = np.mean(all_probs, axis=0)
+        preliminary_idx = np.argmax(equal_avg_probs)
+        preliminary_class = self.class_names[preliminary_idx]
+        
+        # Check if preliminary class is one where hypercolumn models should have priority
+        use_hypercolumn_priority = preliminary_class in self.HYPERCOLUMN_PRIORITY_CLASSES
+        
+        # Second pass: compute final weighted average based on detected class
+        avg_probs = self._get_weighted_average(all_probs, model_names, use_hypercolumn_priority)
         ensemble_idx = np.argmax(avg_probs)
         ensemble_class = self.class_names[ensemble_idx]
         ensemble_confidence = float(avg_probs[ensemble_idx])
@@ -535,7 +582,9 @@ class ModelEnsembleAgent:
             "ensemble_confidence": ensemble_confidence,
             "individual_predictions": individual_predictions,
             "fracture_detected": ensemble_class != "Healthy",
-            "all_probabilities": {self.class_names[i]: float(avg_probs[i]) for i in range(len(avg_probs))}
+            "all_probabilities": {self.class_names[i]: float(avg_probs[i]) for i in range(len(avg_probs))},
+            "weighted_voting": use_hypercolumn_priority,
+            "weighting_reason": f"Hypercolumn models prioritized for {preliminary_class}" if use_hypercolumn_priority else "Equal weights for all models"
         }
 
 
