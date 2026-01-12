@@ -68,13 +68,14 @@ The system classifies X-ray images into **8 categories**:
 
 ### Weighted Ensemble Voting
 
-For **Oblique**, **Oblique Displaced**, **Transverse**, and **Transverse Displaced** fractures, the system applies **3x weight** to HyperColumn models which were specifically trained for these challenging cases:
+For **Oblique**, **Oblique Displaced**, **Transverse**, and **Transverse Displaced** fractures, the system gives priority to HyperColumn models which were specifically trained for these challenging cases. The exact hypercolumn weighting was tuned on the validation set (see calibration scripts below) and the current default is a neutral weight (1.0) after validation showed no consistent benefit from a higher multiplier.
 
 ```python
-# Hypercolumn models get priority for specific fracture types
+# Hypercolumn priority classes
 HYPERCOLUMN_PRIORITY_CLASSES = {"Oblique", "Oblique Displaced", "Transverse", "Transverse Displaced"}
-HYPERCOLUMN_WEIGHT = 3.0  # 3x weight for hypercolumn models
-DEFAULT_WEIGHT = 1.0      # Equal weight for other models
+# Hypercolumn weight was tuned on validation (best found: 1.0)
+HYPERCOLUMN_WEIGHT = 1.0
+DEFAULT_WEIGHT = 1.0
 ```
 
 ---
@@ -152,7 +153,13 @@ MedAI-ExplainableFractureDetection/
 ├── 📂 scripts/                          # Utility scripts
 │   ├── test_all_models.py              # Test all models on dataset
 │   ├── test_hypercolumn.py             # Test hypercolumn models
-│   └── visualize_gradcam.py            # Generate Grad-CAM visualizations
+│   ├── visualize_gradcam.py            # Generate Grad-CAM visualizations
+│   ├── prepare_val_and_calibrate.py    # Build validation NPZ, grid-search hypercolumn weight, calibrate conformal threshold
+│   ├── calibrate_conformal.py          # Calibrate conformal prediction threshold from validation NPZ
+│   ├── test_with_conformal.py          # Run inference over a directory using calibrated conformal threshold
+│   ├── inspect_images.py               # Per-image per-model logits + Grad-CAM export for inspection
+│   ├── compute_validation_metrics.py   # Confusion matrix, per-class calibration (Brier), and plots
+│   └── train_stacker.py                # Train stacking meta-classifier (StandardScaler + GridSearchCV)
 │
 ├── 📂 models/                           # Trained model checkpoints (.pth)
 │   ├── best_swin.pth
@@ -275,6 +282,15 @@ python scripts/test_hypercolumn.py
 
 # Generate Grad-CAM visualizations
 python scripts/visualize_gradcam.py
+
+# Prepare validation NPZ and calibrate conformal threshold (creates outputs/val_calib.npz and conformal_threshold.txt)
+python scripts/prepare_val_and_calibrate.py --checkpoint-dir models --alpha 0.10
+
+# Train the stacking meta-classifier (uses StandardScaler + GridSearchCV over L2 C values)
+python scripts/train_stacker.py --input outputs/val_calib.npz --out outputs/stacker.joblib
+
+# Run tests using a calibrated conformal threshold
+python scripts/test_with_conformal.py --test-dir test_images --threshold-file conformal_threshold.txt --out outputs/test_with_conformal_updated.json
 ```
 
 ---
@@ -304,6 +320,61 @@ The system generates **Gradient-weighted Class Activation Mapping (Grad-CAM)** v
 ---
 
 ## 📊 Training Details
+
+## 🔐 Conformal Prediction (Calibration)
+
+This repository includes split-conformal post-processing to produce prediction sets with guaranteed coverage on held-out data. The nonconformity score used is s = 1 - p_true, where p_true is the model probability assigned to the true class. Calibration computes a nonconformity threshold `t` such that future prediction sets constructed by including classes with p >= 1 - t will have the targeted miscoverage (alpha).
+
+Key scripts and artifacts:
+
+- `scripts/prepare_val_and_calibrate.py`: Builds `outputs/val_calib.npz` (per-model probabilities + labels), runs a small grid-search over hypercolumn weights, and computes a calibrated threshold written to `conformal_threshold.txt`.
+- `scripts/calibrate_conformal.py`: Standalone calibrator that reads an NPZ of validation probabilities and labels and writes a threshold for a chosen `alpha`.
+- `scripts/test_with_conformal.py`: Runs inference on a folder of images and includes `conformal_set` in the per-image JSON results when enabled.
+- Artifact: `conformal_threshold.txt` — calibrated threshold value (example found: ~0.6020194292068481 for alpha=0.10 in recent runs).
+
+How to run calibration (example):
+
+```bash
+python scripts/prepare_val_and_calibrate.py --checkpoint-dir models --alpha 0.10
+```
+
+Then enable conformal prediction in the Streamlit sidebar ("Enable conformal prediction") and point the threshold file path to `conformal_threshold.txt`.
+
+## 🧩 Stacker Retraining & Improvements
+
+The stacking meta-classifier has been improved to reduce numerical instability and better generalization:
+
+- `scripts/train_stacker.py` now trains a pipeline with `StandardScaler()` followed by `LogisticRegression(multi_class='multinomial')`.
+- A `GridSearchCV` over L2 regularization strength (`C` values) is used to select the best regularization. This prevents extreme weight magnitudes that previously caused numeric warnings.
+- Outputs:
+  - `outputs/stacker.joblib` — saved pipeline (scaler + classifier)
+  - `outputs/stacker_eval.json` — validation accuracy and best parameters
+
+Example:
+
+```bash
+python scripts/train_stacker.py --input outputs/val_calib.npz --out outputs/stacker.joblib
+```
+
+If you observe numeric warnings during training, try expanding the `C` grid or add PCA to reduce dimensionality before scaling.
+
+## 🖼️ Per-model Grad-CAM Previews (UI)
+
+The Streamlit app now generates and stores per-model Grad-CAM overlays for each loaded model when analyzing an image. In the Explainability panel you will see a checkbox list of each model that produced a Grad-CAM — toggle a model to preview its overlay. This helps compare where different models focus and can reveal why ensemble decisions differ.
+
+Notes:
+
+- Grad-CAM requires `pytorch-grad-cam` and will silently skip models that fail to produce a heatmap.
+- Session state key: `st.session_state['gradcam_images']` contains a `dict` of `{model_name: PIL.Image}` overlays.
+
+## 📦 Key Artifacts (outputs/)
+
+- `outputs/val_calib.npz` — validation per-model probabilities and ground-truth labels used for calibration and stacking
+- `conformal_threshold.txt` — calibrated nonconformity threshold
+- `outputs/stacker.joblib` — trained stacking pipeline (scaler + logistic regression)
+- `outputs/stacker_eval.json` — stacker evaluation metrics and best params
+- `outputs/inspection_specific.json` — per-image per-model logits and metadata from inspection runs
+- `outputs/test_with_conformal_updated.json` — test-run results that include conformal sets and ensemble outputs
 
 ### Dataset
 

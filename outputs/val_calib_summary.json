@@ -1,0 +1,16 @@
+{
+  "model_names": [
+    "swin",
+    "mobilenetv2",
+    "efficientnetv2",
+    "maxvit",
+    "densenet169",
+    "hypercolumn_cbam_densenet169_focal",
+    "hypercolumn_cbam_densenet169",
+    "hypercolumn_densenet169",
+    "hypercolumn_densenet169_old"
+  ],
+  "best_weight": 1.0,
+  "best_acc": 0.9245283018867925,
+  "threshold": 0.6020194292068481
+}

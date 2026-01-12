@@ -7,6 +7,7 @@ import timm
 from PIL import Image
 import numpy as np
 from typing import Dict, Any, List
+from medai.uncertainty.conformal import predict_conformal_set
 
 # --- 1. CONFIGURATION ---
 
@@ -47,10 +48,11 @@ def get_transforms(img_size: int = 224):
 # --- 2. DIAGNOSTIC AGENT CORE ---
 
 class DiagnosticAgent:
-    def __init__(self, checkpoint_path: str, model_name: str, num_classes: int, img_size: int, class_names: List[str]):
+    def __init__(self, checkpoint_path: str, model_name: str, num_classes: int, img_size: int, class_names: List[str], conformal_threshold: float = None):
         self.device = DEVICE
         self.img_size = img_size
         self.class_names = class_names
+        self.conformal_threshold = conformal_threshold
         
         # 1. Load Model Architecture
         self.model = get_model(model_name, num_classes, pretrained=False).to(self.device)
@@ -112,8 +114,7 @@ class DiagnosticAgent:
 
         # Determine Fracture Presence (assuming 'Healthy' is a known class)
         is_fracture_detected = (predicted_class_name != 'Healthy')
-        
-        return {
+        result = {
             "image_path": image_path,
             "fracture_detected": is_fracture_detected,
             "predicted_class": predicted_class_name,
@@ -123,6 +124,17 @@ class DiagnosticAgent:
             "all_probabilities": probabilities.cpu().numpy().tolist()
         }
 
+        # Add conformal prediction set when a threshold is provided
+        if self.conformal_threshold is not None:
+            try:
+                conformal_set = predict_conformal_set(probabilities.cpu().numpy(), self.conformal_threshold, self.class_names)
+                result["conformal_set"] = conformal_set
+                result["conformal_threshold"] = float(self.conformal_threshold)
+            except Exception:
+                # Don't fail inference if conformal post-process errors out
+                result["conformal_set_error"] = "failed to compute conformal set"
+
+        return result
 # --- 3. EXECUTION ---
 
 if __name__ == '__main__':

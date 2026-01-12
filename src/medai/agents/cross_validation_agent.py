@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 from typing import List, Dict, Any
 import timm 
+from medai.uncertainty.conformal import predict_conformal_set
 
 # ----------------------------------------------------------------------
 # --- Helper Functions ---
@@ -73,7 +74,7 @@ def get_transforms(img_size: int = 224):
 # ----------------------------------------------------------------------
 
 class ModelEnsembleAgent:
-    def __init__(self, model_names: List[str], checkpoints_dir: str, num_classes: int, class_names: List[str]):
+    def __init__(self, model_names: List[str], checkpoints_dir: str, num_classes: int, class_names: List[str], conformal_threshold: float = None):
         self.models = {}
         self.model_names = model_names
         self.num_classes = num_classes
@@ -82,6 +83,7 @@ class ModelEnsembleAgent:
         
         self.device = get_device() 
         self._load_all_models(checkpoints_dir)
+        self.conformal_threshold = conformal_threshold
 
     def _load_all_models(self, checkpoints_dir: str):
         """Loads all specified model checkpoints with strict=False fallback."""
@@ -149,13 +151,24 @@ class ModelEnsembleAgent:
         ensemble_confidence = avg_probs[ensemble_idx]
         ensemble_class = self.class_names[ensemble_idx]
 
-        return {
+        result = {
             "image_path": image_path,
             "ensemble_prediction": ensemble_class,
             "ensemble_confidence": float(ensemble_confidence),
             "individual_predictions": individual_predictions,
-            "fracture_detected": ensemble_class != "Healthy"
+            "fracture_detected": ensemble_class != "Healthy",
+            "all_probabilities": avg_probs.tolist()
         }
+
+        if self.conformal_threshold is not None:
+            try:
+                conformal_set = predict_conformal_set(avg_probs, self.conformal_threshold, self.class_names)
+                result["conformal_set"] = conformal_set
+                result["conformal_threshold"] = float(self.conformal_threshold)
+            except Exception:
+                result["conformal_set_error"] = "failed to compute conformal set"
+
+        return result
 
 # ----------------------------------------------------------------------
 # --- Execution Block ---

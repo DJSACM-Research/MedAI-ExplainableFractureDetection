@@ -332,7 +332,8 @@ def get_transforms(img_size: int = 224):
 class ModelEnsembleAgent:
     """Runs inference across multiple models and combines predictions."""
     HYPERCOLUMN_PRIORITY_CLASSES = {"Oblique", "Oblique Displaced", "Transverse", "Transverse Displaced"}
-    HYPERCOLUMN_WEIGHT = 3.0
+    # Tuned on validation set (see scripts/prepare_val_and_calibrate.py)
+    HYPERCOLUMN_WEIGHT = 1.0
     DEFAULT_WEIGHT = 1.0
     
     def __init__(self, models: Dict[str, nn.Module], class_names: List[str], device, img_size: int = 224):

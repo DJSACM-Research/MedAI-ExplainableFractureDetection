@@ -1,0 +1,7 @@
+{
+  "val_accuracy": 0.9545454545454546,
+  "best_params": {
+    "clf__C": 0.01,
+    "clf__penalty": "l2"
+  }
+}

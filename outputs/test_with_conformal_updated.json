@@ -1,0 +1,412 @@
+[
+  {
+    "image": "test_images/Comminuted_7_mri_0_5567_jpeg.rf.02a1bcb53a33005e150fc42fa0e16993_0004.jpg",
+    "diagnosis": {
+      "predicted_class": "Comminuted",
+      "confidence_score": 0.9999904632568359,
+      "fracture_detected": true,
+      "all_probabilities": {
+        "Comminuted": 0.9999904632568359,
+        "Greenstick": 1.2386274761411187e-07,
+        "Healthy": 8.581726262946177e-08,
+        "Oblique": 7.900061063992325e-06,
+        "Oblique Displaced": 6.50000288260344e-07,
+        "Spiral": 2.403045300525264e-07,
+        "Transverse": 2.3560225770324905e-07,
+        "Transverse Displaced": 3.1320320204031304e-07
+      },
+      "severity_type": "Comminuted",
+      "conformal_set": [
+        "Comminuted"
+      ],
+      "conformal_threshold": 0.6020194292068481
+    },
+    "ensemble": {
+      "ensemble_prediction": "Comminuted",
+      "ensemble_confidence": 0.9970521330833435,
+      "individual_predictions": {
+        "swin": {
+          "class": "Comminuted",
+          "confidence": 0.9999904632568359
+        },
+        "mobilenetv2": {
+          "class": "Comminuted",
+          "confidence": 0.999915599822998
+        },
+        "efficientnetv2": {
+          "class": "Comminuted",
+          "confidence": 0.9991614818572998
+        },
+        "maxvit": {
+          "class": "Comminuted",
+          "confidence": 0.9996531009674072
+        },
+        "densenet169": {
+          "class": "Comminuted",
+          "confidence": 0.9997040629386902
+        },
+        "hypercolumn_cbam_densenet169_focal": {
+          "class": "Comminuted",
+          "confidence": 0.9885587692260742
+        },
+        "hypercolumn_cbam_densenet169": {
+          "class": "Comminuted",
+          "confidence": 0.998555600643158
+        },
+        "hypercolumn_densenet169": {
+          "class": "Comminuted",
+          "confidence": 0.9885587692260742
+        },
+        "hypercolumn_densenet169_old": {
+          "class": "Comminuted",
+          "confidence": 0.999371349811554
+        }
+      },
+      "fracture_detected": true,
+      "all_probabilities": {
+        "Comminuted": 0.9970521330833435,
+        "Greenstick": 0.00023354006407316774,
+        "Healthy": 0.00012089978554286063,
+        "Oblique": 0.0004121765377931297,
+        "Oblique Displaced": 0.0006534290150739253,
+        "Spiral": 0.0001082848830264993,
+        "Transverse": 0.00028980252682231367,
+        "Transverse Displaced": 0.0011297269957140088
+      },
+      "weighted_voting": false,
+      "weighting_reason": "Equal weights for all models",
+      "conformal_set": [
+        "Comminuted"
+      ],
+      "conformal_threshold": 0.6020194292068481
+    }
+  },
+  {
+    "image": "test_images/Healthy_155_jpg.rf.036b4d8284616a7663c298c6893d9ebb_0003.jpg",
+    "diagnosis": {
+      "predicted_class": "Healthy",
+      "confidence_score": 0.9994341731071472,
+      "fracture_detected": false,
+      "all_probabilities": {
+        "Comminuted": 4.8785677790874615e-06,
+        "Greenstick": 5.940036498941481e-05,
+        "Healthy": 0.9994341731071472,
+        "Oblique": 1.252020183528657e-06,
+        "Oblique Displaced": 4.694568360719131e-06,
+        "Spiral": 5.196678216634609e-07,
+        "Transverse": 0.0004949018475599587,
+        "Transverse Displaced": 2.2888849571245373e-07
+      },
+      "severity_type": "Healthy",
+      "conformal_set": [
+        "Healthy"
+      ],
+      "conformal_threshold": 0.6020194292068481
+    },
+    "ensemble": {
+      "ensemble_prediction": "Healthy",
+      "ensemble_confidence": 0.9956902861595154,
+      "individual_predictions": {
+        "swin": {
+          "class": "Healthy",
+          "confidence": 0.9994341731071472
+        },
+        "mobilenetv2": {
+          "class": "Healthy",
+          "confidence": 0.9973047971725464
+        },
+        "efficientnetv2": {
+          "class": "Healthy",
+          "confidence": 0.9984744191169739
+        },
+        "maxvit": {
+          "class": "Healthy",
+          "confidence": 0.9992645382881165
+        },
+        "densenet169": {
+          "class": "Healthy",
+          "confidence": 0.9998425245285034
+        },
+        "hypercolumn_cbam_densenet169_focal": {
+          "class": "Healthy",
+          "confidence": 0.9839189052581787
+        },
+        "hypercolumn_cbam_densenet169": {
+          "class": "Healthy",
+          "confidence": 0.9998754262924194
+        },
+        "hypercolumn_densenet169": {
+          "class": "Healthy",
+          "confidence": 0.9839189052581787
+        },
+        "hypercolumn_densenet169_old": {
+          "class": "Healthy",
+          "confidence": 0.9991788268089294
+        }
+      },
+      "fracture_detected": false,
+      "all_probabilities": {
+        "Comminuted": 0.00048357812920585275,
+        "Greenstick": 0.00011751030251616612,
+        "Healthy": 0.9956902861595154,
+        "Oblique": 0.0002798018977046013,
+        "Oblique Displaced": 0.0003066057397518307,
+        "Spiral": 7.490277494071051e-05,
+        "Transverse": 0.0006359508261084557,
+        "Transverse Displaced": 0.0024113631807267666
+      },
+      "weighted_voting": false,
+      "weighting_reason": "Equal weights for all models",
+      "conformal_set": [
+        "Healthy"
+      ],
+      "conformal_threshold": 0.6020194292068481
+    }
+  },
+  {
+    "image": "test_images/Oblique_Displaced_51_jpg.rf.6163f82a04ac7d9d186954f7e45adb1b_0005.jpg",
+    "diagnosis": {
+      "predicted_class": "Oblique",
+      "confidence_score": 0.9999189376831055,
+      "fracture_detected": true,
+      "all_probabilities": {
+        "Comminuted": 1.161613818112528e-05,
+        "Greenstick": 1.9153608263877686e-06,
+        "Healthy": 1.3500743989425246e-07,
+        "Oblique": 0.9999189376831055,
+        "Oblique Displaced": 2.880548890971113e-05,
+        "Spiral": 4.323677785578184e-06,
+        "Transverse": 6.952896455914015e-06,
+        "Transverse Displaced": 2.734470763243735e-05
+      },
+      "severity_type": "Oblique",
+      "conformal_set": [
+        "Oblique"
+      ],
+      "conformal_threshold": 0.6020194292068481
+    },
+    "ensemble": {
+      "ensemble_prediction": "Oblique",
+      "ensemble_confidence": 0.6656662225723267,
+      "individual_predictions": {
+        "swin": {
+          "class": "Oblique",
+          "confidence": 0.9999189376831055
+        },
+        "mobilenetv2": {
+          "class": "Oblique",
+          "confidence": 0.998332679271698
+        },
+        "efficientnetv2": {
+          "class": "Oblique",
+          "confidence": 0.9982414245605469
+        },
+        "maxvit": {
+          "class": "Oblique",
+          "confidence": 0.9985507130622864
+        },
+        "densenet169": {
+          "class": "Oblique",
+          "confidence": 0.9990313053131104
+        },
+        "hypercolumn_cbam_densenet169_focal": {
+          "class": "Oblique Displaced",
+          "confidence": 0.9829493761062622
+        },
+        "hypercolumn_cbam_densenet169": {
+          "class": "Oblique",
+          "confidence": 0.9935188889503479
+        },
+        "hypercolumn_densenet169": {
+          "class": "Oblique Displaced",
+          "confidence": 0.9829493761062622
+        },
+        "hypercolumn_densenet169_old": {
+          "class": "Oblique Displaced",
+          "confidence": 0.9969160556793213
+        }
+      },
+      "fracture_detected": true,
+      "all_probabilities": {
+        "Comminuted": 0.0005067770252935588,
+        "Greenstick": 0.0007063765078783035,
+        "Healthy": 0.0003110375255346298,
+        "Oblique": 0.6656662225723267,
+        "Oblique Displaced": 0.3293503224849701,
+        "Spiral": 0.0005953698419034481,
+        "Transverse": 0.0014447394059970975,
+        "Transverse Displaced": 0.0014190798392519355
+      },
+      "weighted_voting": true,
+      "weighting_reason": "Hypercolumn models prioritized for Oblique",
+      "conformal_set": [
+        "Oblique"
+      ],
+      "conformal_threshold": 0.6020194292068481
+    }
+  },
+  {
+    "image": "test_images/Spiral_257_jpg.rf.3cc9912ab33e60062d99c277a5aa9bf7_0010.jpg",
+    "diagnosis": {
+      "predicted_class": "Spiral",
+      "confidence_score": 0.999961256980896,
+      "fracture_detected": true,
+      "all_probabilities": {
+        "Comminuted": 1.0242036978524993e-06,
+        "Greenstick": 2.4023627247515833e-06,
+        "Healthy": 4.3207711541981553e-07,
+        "Oblique": 4.205026016279589e-06,
+        "Oblique Displaced": 2.7126330678584054e-05,
+        "Spiral": 0.999961256980896,
+        "Transverse": 1.7814542161431746e-06,
+        "Transverse Displaced": 1.8062820572595228e-06
+      },
+      "severity_type": "Spiral",
+      "conformal_set": [
+        "Spiral"
+      ],
+      "conformal_threshold": 0.6020194292068481
+    },
+    "ensemble": {
+      "ensemble_prediction": "Spiral",
+      "ensemble_confidence": 0.9807673096656799,
+      "individual_predictions": {
+        "swin": {
+          "class": "Spiral",
+          "confidence": 0.999961256980896
+        },
+        "mobilenetv2": {
+          "class": "Spiral",
+          "confidence": 0.9995150566101074
+        },
+        "efficientnetv2": {
+          "class": "Spiral",
+          "confidence": 0.998553454875946
+        },
+        "maxvit": {
+          "class": "Spiral",
+          "confidence": 0.9993357062339783
+        },
+        "densenet169": {
+          "class": "Spiral",
+          "confidence": 0.9999617338180542
+        },
+        "hypercolumn_cbam_densenet169_focal": {
+          "class": "Spiral",
+          "confidence": 0.9344527125358582
+        },
+        "hypercolumn_cbam_densenet169": {
+          "class": "Spiral",
+          "confidence": 0.9619432687759399
+        },
+        "hypercolumn_densenet169": {
+          "class": "Spiral",
+          "confidence": 0.9344527125358582
+        },
+        "hypercolumn_densenet169_old": {
+          "class": "Spiral",
+          "confidence": 0.9987303614616394
+        }
+      },
+      "fracture_detected": true,
+      "all_probabilities": {
+        "Comminuted": 0.0004732660308945924,
+        "Greenstick": 0.003413659520447254,
+        "Healthy": 0.00045275199227035046,
+        "Oblique": 0.0006419618148356676,
+        "Oblique Displaced": 0.0015206359094008803,
+        "Spiral": 0.9807673096656799,
+        "Transverse": 0.009897963143885136,
+        "Transverse Displaced": 0.002832412486895919
+      },
+      "weighted_voting": false,
+      "weighting_reason": "Equal weights for all models",
+      "conformal_set": [
+        "Spiral"
+      ],
+      "conformal_threshold": 0.6020194292068481
+    }
+  },
+  {
+    "image": "test_images/Transverse_153_jpg.rf.08e1a53f8b4c40907f0f20362078debc_0007.jpg",
+    "diagnosis": {
+      "predicted_class": "Transverse Displaced",
+      "confidence_score": 0.9960702657699585,
+      "fracture_detected": true,
+      "all_probabilities": {
+        "Comminuted": 2.923677493527066e-05,
+        "Greenstick": 2.8490003387560137e-05,
+        "Healthy": 1.9210587197449058e-05,
+        "Oblique": 0.0008970708586275578,
+        "Oblique Displaced": 0.0006098466692492366,
+        "Spiral": 5.666567449225113e-05,
+        "Transverse": 0.00228920322842896,
+        "Transverse Displaced": 0.9960702657699585
+      },
+      "severity_type": "Transverse Displaced",
+      "conformal_set": [
+        "Transverse Displaced"
+      ],
+      "conformal_threshold": 0.6020194292068481
+    },
+    "ensemble": {
+      "ensemble_prediction": "Transverse Displaced",
+      "ensemble_confidence": 0.6714736223220825,
+      "individual_predictions": {
+        "swin": {
+          "class": "Transverse Displaced",
+          "confidence": 0.9960702657699585
+        },
+        "mobilenetv2": {
+          "class": "Transverse Displaced",
+          "confidence": 0.9994164705276489
+        },
+        "efficientnetv2": {
+          "class": "Transverse Displaced",
+          "confidence": 0.9991484880447388
+        },
+        "maxvit": {
+          "class": "Transverse Displaced",
+          "confidence": 0.9990237951278687
+        },
+        "densenet169": {
+          "class": "Transverse Displaced",
+          "confidence": 0.9996451139450073
+        },
+        "hypercolumn_cbam_densenet169_focal": {
+          "class": "Transverse",
+          "confidence": 0.7464437484741211
+        },
+        "hypercolumn_cbam_densenet169": {
+          "class": "Transverse Displaced",
+          "confidence": 0.9980021119117737
+        },
+        "hypercolumn_densenet169": {
+          "class": "Transverse",
+          "confidence": 0.7464437484741211
+        },
+        "hypercolumn_densenet169_old": {
+          "class": "Transverse",
+          "confidence": 0.999160647392273
+        }
+      },
+      "fracture_detected": true,
+      "all_probabilities": {
+        "Comminuted": 0.014670593664050102,
+        "Greenstick": 0.0022380417212843895,
+        "Healthy": 0.015006164088845253,
+        "Oblique": 0.013497061096131802,
+        "Oblique Displaced": 0.0034508027601987123,
+        "Spiral": 0.0024312271270900965,
+        "Transverse": 0.27723249793052673,
+        "Transverse Displaced": 0.6714736223220825
+      },
+      "weighted_voting": true,
+      "weighting_reason": "Hypercolumn models prioritized for Transverse Displaced",
+      "conformal_set": [
+        "Transverse Displaced"
+      ],
+      "conformal_threshold": 0.6020194292068481
+    }
+  }
+]

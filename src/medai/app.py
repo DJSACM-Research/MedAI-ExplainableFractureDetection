@@ -23,6 +23,7 @@ import torch.nn as nn
 import torchvision.transforms as T
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+from uncertainty.conformal import predict_conformal_set
 
 # Attempt to import optional dependencies
 try:
@@ -276,8 +277,13 @@ MODEL_CONFIGS = {
 
 # OpenRouter configuration
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_API_KEY = st.secrets.get("openrouter_api_key", os.environ.get("OPENROUTER_API_KEY", ""))
-OPENROUTER_MODEL = st.secrets.get("openrouter_model", "meta-llama/llama-3.2-3b-instruct:free")
+# Access streamlit secrets defensively so importing app in non-streamlit contexts doesn't fail
+try:
+    OPENROUTER_API_KEY = st.secrets.get("openrouter_api_key", os.environ.get("OPENROUTER_API_KEY", ""))
+    OPENROUTER_MODEL = st.secrets.get("openrouter_model", os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.2-3b-instruct:free"))
+except Exception:
+    OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+    OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.2-3b-instruct:free")
 
 # ChromaDB configuration
 CHROMA_DB_PATH = "./chroma_db"
@@ -407,6 +413,18 @@ def get_transforms(img_size: int = 224):
     ])
 
 
+def read_threshold(path: str):
+    """Read a numeric threshold (float) from a text file. Returns None on error."""
+    try:
+        if not path or not os.path.exists(path):
+            return None
+        with open(path, 'r') as fh:
+            s = fh.read().strip()
+            return float(s)
+    except Exception:
+        return None
+
+
 def get_model(name: str, num_classes: int, pretrained: bool = False):
     """Loads a model architecture from timm and adapts the classifier head."""
     if not TIMM_AVAILABLE:
@@ -461,11 +479,12 @@ def load_model_from_checkpoint(model_name: str, checkpoint_path: str, num_classe
 class DiagnosticAgent:
     """Runs inference on a single model to diagnose fractures."""
     
-    def __init__(self, model, class_names: List[str], device, img_size: int = 224):
+    def __init__(self, model, class_names: List[str], device, img_size: int = 224, conformal_threshold: float = None):
         self.model = model
         self.class_names = class_names
         self.device = device
         self.transforms = get_transforms(img_size)
+        self.conformal_threshold = conformal_threshold
     
     @torch.no_grad()
     def diagnose(self, image: Image.Image) -> Dict[str, Any]:
@@ -481,13 +500,23 @@ class DiagnosticAgent:
         confidence = float(probs[pred_idx])
         predicted_class = self.class_names[pred_idx]
         
-        return {
+        result = {
             "predicted_class": predicted_class,
             "confidence_score": confidence,
             "fracture_detected": predicted_class != "Healthy",
             "all_probabilities": {self.class_names[i]: float(probs[i]) for i in range(len(probs))},
             "severity_type": predicted_class
         }
+
+        if self.conformal_threshold is not None:
+            try:
+                conformal_set = predict_conformal_set(probs, self.conformal_threshold, self.class_names)
+                result["conformal_set"] = conformal_set
+                result["conformal_threshold"] = float(self.conformal_threshold)
+            except Exception:
+                result["conformal_set_error"] = "failed to compute conformal set"
+
+        return result
 
 
 # ============================================================================
@@ -499,16 +528,18 @@ class ModelEnsembleAgent:
     
     # Classes where hypercolumn models should get more weight
     HYPERCOLUMN_PRIORITY_CLASSES = {"Oblique", "Oblique Displaced", "Transverse", "Transverse Displaced"}
-    # Weight for hypercolumn models when priority class is detected (3x to ensure dominance)
-    HYPERCOLUMN_WEIGHT = 3.0
+    # Weight for hypercolumn models when priority class is detected
+    # Tuned on validation set (see scripts/prepare_val_and_calibrate.py)
+    HYPERCOLUMN_WEIGHT = 1.0
     # Weight for other models
     DEFAULT_WEIGHT = 1.0
     
-    def __init__(self, models: Dict[str, nn.Module], class_names: List[str], device, img_size: int = 224):
+    def __init__(self, models: Dict[str, nn.Module], class_names: List[str], device, img_size: int = 224, conformal_threshold: float = None):
         self.models = models
         self.class_names = class_names
         self.device = device
         self.transforms = get_transforms(img_size)
+        self.conformal_threshold = conformal_threshold
     
     def _is_hypercolumn_model(self, model_name: str) -> bool:
         """Check if a model is a hypercolumn/column model."""
@@ -539,9 +570,22 @@ class ModelEnsembleAgent:
             weighted_probs += prob * weight
         
         return weighted_probs
+
+    def _predict_with_stacker(self, all_probs: List[np.ndarray], model_names: List[str]):
+        """If a `stacker` is present on the instance, use it to predict class probabilities.
+
+        Expects `self.stacker` to be a sklearn-like estimator with `predict_proba` accepting features shaped (1, M*C).
+        """
+        if not hasattr(self, 'stacker') or self.stacker is None:
+            raise RuntimeError('No stacker available')
+        import numpy as np
+        probs = np.stack(all_probs, axis=0)  # (M, C)
+        feat = probs.reshape(1, -1)
+        proba = self.stacker.predict_proba(feat)[0]
+        return proba
     
     @torch.no_grad()
-    def run_ensemble(self, image: Image.Image) -> Dict[str, Any]:
+    def run_ensemble(self, image: Image.Image, use_stacking: bool = False) -> Dict[str, Any]:
         """Runs ensemble inference on a PIL image."""
         if not self.models:
             return {"error": "No models loaded"}
@@ -573,12 +617,18 @@ class ModelEnsembleAgent:
         use_hypercolumn_priority = preliminary_class in self.HYPERCOLUMN_PRIORITY_CLASSES
         
         # Second pass: compute final weighted average based on detected class
-        avg_probs = self._get_weighted_average(all_probs, model_names, use_hypercolumn_priority)
+        if use_stacking:
+            try:
+                avg_probs = self._predict_with_stacker(all_probs, model_names)
+            except Exception:
+                avg_probs = self._get_weighted_average(all_probs, model_names, use_hypercolumn_priority)
+        else:
+            avg_probs = self._get_weighted_average(all_probs, model_names, use_hypercolumn_priority)
         ensemble_idx = np.argmax(avg_probs)
         ensemble_class = self.class_names[ensemble_idx]
         ensemble_confidence = float(avg_probs[ensemble_idx])
         
-        return {
+        result = {
             "ensemble_prediction": ensemble_class,
             "ensemble_confidence": ensemble_confidence,
             "individual_predictions": individual_predictions,
@@ -587,6 +637,16 @@ class ModelEnsembleAgent:
             "weighted_voting": use_hypercolumn_priority,
             "weighting_reason": f"Hypercolumn models prioritized for {preliminary_class}" if use_hypercolumn_priority else "Equal weights for all models"
         }
+
+        if self.conformal_threshold is not None:
+            try:
+                conformal_set = predict_conformal_set(avg_probs, self.conformal_threshold, self.class_names)
+                result["conformal_set"] = conformal_set
+                result["conformal_threshold"] = float(self.conformal_threshold)
+            except Exception:
+                result["conformal_set_error"] = "failed to compute conformal set"
+
+        return result
 
 
 # ============================================================================
@@ -940,6 +1000,7 @@ def initialize_session_state():
         "diagnosis_result": None,
         "ensemble_result": None,
         "gradcam_image": None,
+        "gradcam_images": {},
         "explanation_text": None,
         "educational_output": None,
         "medical_summary": None,
@@ -999,6 +1060,17 @@ def render_sidebar():
         value="No significant medical history.",
         height=100
     )
+    # Conformal Prediction settings
+    st.sidebar.subheader("Conformal Prediction")
+    use_conformal = st.sidebar.checkbox("Enable conformal prediction", value=False,
+                                        help="Include conformal prediction sets in outputs")
+    conformal_threshold_path = st.sidebar.text_input(
+        "Threshold file (optional)", value="./conformal_threshold.txt",
+        help="Path to a text file containing a single float threshold value (nonconformity t)."
+    )
+    conformal_threshold_value = st.sidebar.number_input(
+        "Manual threshold value (used if file missing)", value=0.10, format="%.6f"
+    )
     
     return {
         "checkpoint_dir": checkpoint_dir,
@@ -1008,6 +1080,10 @@ def render_sidebar():
             "gender": patient_gender,
             "history": patient_history
         }
+        ,
+        "use_conformal": use_conformal,
+        "conformal_threshold_path": conformal_threshold_path,
+        "conformal_threshold_value": float(conformal_threshold_value)
     }
 
 
@@ -1053,6 +1129,10 @@ def render_diagnosis_results():
                 st.metric("Status", status)
                 st.metric("Classification", result["predicted_class"])
                 st.metric("Confidence", f"{result['confidence_score']:.2%}")
+                # Show conformal set if present
+                if "conformal_set" in result:
+                    st.markdown("**Conformal Prediction Set (guaranteed coverage)**")
+                    st.write(" ", ", ".join(result["conformal_set"]))
             else:
                 st.error(result["error"])
     
@@ -1066,6 +1146,9 @@ def render_diagnosis_results():
                 st.metric("Status", status)
                 st.metric("Classification", result["ensemble_prediction"])
                 st.metric("Confidence", f"{result['ensemble_confidence']:.2%}")
+                if "conformal_set" in result:
+                    st.markdown("**Conformal Prediction Set (guaranteed coverage)**")
+                    st.write(" ", ", ".join(result["conformal_set"]))
                 
                 # Show individual predictions
                 with st.expander("Individual Model Predictions"):
@@ -1094,23 +1177,44 @@ def render_diagnosis_results():
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
+        # show margin and uncertainty
+        try:
+            vals = list(probs.values())
+            sorted_idxs = sorted(range(len(vals)), key=lambda k: vals[k], reverse=True)
+            top1 = vals[sorted_idxs[0]]
+            top2 = vals[sorted_idxs[1]] if len(vals) > 1 else 0.0
+            margin = top1 - top2
+            st.markdown(f"**Top-1 vs Top-2 margin:** {margin:.2%}")
+            if margin < 0.15:
+                st.warning("Low margin between top classes — result may be ambiguous. See conformal set for alternatives.")
+        except Exception:
+            pass
 
 
 def render_explainability():
     """Renders the explainability section."""
-    if st.session_state.gradcam_image is None and st.session_state.explanation_text is None:
+    if (not st.session_state.gradcam_images) and st.session_state.gradcam_image is None and st.session_state.explanation_text is None:
         return
-    
+
     st.subheader("🔍 AI Explanation")
-    
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
-        if st.session_state.gradcam_image:
-            st.image(st.session_state.gradcam_image, caption="Grad-CAM Heatmap", width='stretch')
+        # If we have per-model gradcam images, show checkboxes to preview each
+        if st.session_state.gradcam_images:
+            st.markdown("**Per-model Grad-CAMs**")
+            for m_name, pil_img in st.session_state.gradcam_images.items():
+                key = f"gradcam_preview_{m_name}"
+                if st.checkbox(f"Show {m_name}", key=key):
+                    st.image(pil_img, caption=f"Grad-CAM: {m_name}")
         else:
-            st.info("Grad-CAM visualization not available.")
-    
+            # Fallback to single gradcam image
+            if st.session_state.gradcam_image:
+                st.image(st.session_state.gradcam_image, caption="Grad-CAM Heatmap", width='stretch')
+            else:
+                st.info("Grad-CAM visualization not available.")
+
     with col2:
         if st.session_state.explanation_text:
             st.markdown("**Model Explanation:**")
@@ -1196,6 +1300,9 @@ def run_analysis(image: Image.Image, config: dict, device):
     # Load models
     with st.spinner("Loading models..."):
         models = load_models(config["checkpoint_dir"], config["selected_models"], device)
+        # keep models in session state for explainability UI
+        st.session_state.loaded_models = models
+        st.session_state.models_loaded = True
     
     if not models:
         st.error("No models could be loaded. Please check your checkpoint directory.")
@@ -1204,17 +1311,36 @@ def run_analysis(image: Image.Image, config: dict, device):
     # Get primary model for single diagnosis
     primary_model_name = list(models.keys())[0]
     primary_model = models[primary_model_name]
+    # Determine conformal threshold (file overrides manual value)
+    conformal_threshold = None
+    if config.get("use_conformal"):
+        conformal_threshold = read_threshold(config.get("conformal_threshold_path"))
+        if conformal_threshold is None:
+            conformal_threshold = float(config.get("conformal_threshold_value", 0.10))
+            st.info(f"Using manual conformal threshold: {conformal_threshold:.6f}")
+        else:
+            st.info(f"Loaded conformal threshold from file: {conformal_threshold:.6f}")
     
     # Agent 1: Diagnostic Agent
     with st.spinner("Running primary diagnosis..."):
-        diagnostic_agent = DiagnosticAgent(primary_model, CLASS_NAMES, device)
+        diagnostic_agent = DiagnosticAgent(primary_model, CLASS_NAMES, device, conformal_threshold=conformal_threshold)
         st.session_state.diagnosis_result = diagnostic_agent.diagnose(image)
     
     # Agent 2: Ensemble Agent
     if len(models) > 1:
         with st.spinner("Running ensemble analysis..."):
-            ensemble_agent = ModelEnsembleAgent(models, CLASS_NAMES, device)
-            st.session_state.ensemble_result = ensemble_agent.run_ensemble(image)
+            # Use stacking if selected
+            if config.get('ensemble_mode') == 'stacking' and os.path.exists(config.get('stacker_path', '')):
+                import joblib
+                stacker = joblib.load(config.get('stacker_path'))
+                # create ensemble agent with stacking mode: pass stacker as additional attribute
+                ensemble_agent = ModelEnsembleAgent(models, CLASS_NAMES, device, conformal_threshold=conformal_threshold)
+                # monkey-patch stacker into agent for use
+                ensemble_agent.stacker = stacker
+                st.session_state.ensemble_result = ensemble_agent.run_ensemble(image, use_stacking=True)
+            else:
+                ensemble_agent = ModelEnsembleAgent(models, CLASS_NAMES, device, conformal_threshold=conformal_threshold)
+                st.session_state.ensemble_result = ensemble_agent.run_ensemble(image)
     else:
         # Use single model result as ensemble result
         st.session_state.ensemble_result = {
@@ -1227,22 +1353,46 @@ def run_analysis(image: Image.Image, config: dict, device):
             "fracture_detected": st.session_state.diagnosis_result["fracture_detected"],
             "all_probabilities": st.session_state.diagnosis_result["all_probabilities"]
         }
+        # propagate conformal set from single-model diagnosis if present
+        if "conformal_set" in st.session_state.diagnosis_result:
+            st.session_state.ensemble_result["conformal_set"] = st.session_state.diagnosis_result["conformal_set"]
+            st.session_state.ensemble_result["conformal_threshold"] = st.session_state.diagnosis_result.get("conformal_threshold")
     
     # Agent 3: Explainability Agent
     with st.spinner("Generating explanation..."):
-        explain_agent = ExplainabilityAgent(primary_model, CLASS_NAMES, device, body_part="bone")
-        
-        # Get predicted class index
-        pred_class = st.session_state.ensemble_result["ensemble_prediction"]
-        pred_idx = CLASS_NAMES.index(pred_class) if pred_class in CLASS_NAMES else None
-        
-        cam_array = explain_agent.generate_gradcam(image, pred_idx)
-        
-        if cam_array is not None:
-            st.session_state.gradcam_image = explain_agent.visualize_gradcam(image, cam_array)
-        
-        st.session_state.explanation_text = explain_agent.generate_explanation(
-            st.session_state.ensemble_result, cam_array
+        # Generate per-model Grad-CAM visualizations (store as PIL images in session state)
+        gradcam_images = {}
+        for m_name, m_model in models.items():
+            try:
+                explain_agent = ExplainabilityAgent(m_model, CLASS_NAMES, device, body_part="bone")
+                pred_class = st.session_state.ensemble_result["ensemble_prediction"]
+                pred_idx = CLASS_NAMES.index(pred_class) if pred_class in CLASS_NAMES else None
+                cam_array = explain_agent.generate_gradcam(image, pred_idx)
+                if cam_array is not None:
+                    gradcam_images[m_name] = explain_agent.visualize_gradcam(image, cam_array)
+            except Exception:
+                # Skip models that fail explainability
+                continue
+
+        # Save per-model gradcam images (may be empty if not available)
+        st.session_state.gradcam_images = gradcam_images
+
+        # For backward compatibility, keep a single gradcam_image if at least one exists
+        if gradcam_images:
+            # pick primary model image if available else first
+            st.session_state.gradcam_image = gradcam_images.get(primary_model_name, next(iter(gradcam_images.values())))
+        else:
+            st.session_state.gradcam_image = None
+
+        # Generate textual explanation using primary model's cam if present
+        primary_cam = None
+        if primary_model_name in gradcam_images:
+            # convert PIL to numpy array for explanation heuristics
+            primary_cam = np.array(gradcam_images[primary_model_name].convert('L')) / 255.0
+
+        explain_agent_primary = ExplainabilityAgent(primary_model, CLASS_NAMES, device, body_part="bone")
+        st.session_state.explanation_text = explain_agent_primary.generate_explanation(
+            st.session_state.ensemble_result, primary_cam
         )
     
     # Agent 4: Educational Agent
@@ -1311,6 +1461,12 @@ def main():
     
     # Sidebar configuration
     config = render_sidebar()
+    # Ensemble mode selection
+    ensemble_mode = st.sidebar.selectbox("Ensemble Mode", options=["weighted", "stacking"], index=0,
+                                         help="Choose 'stacking' to use a trained meta-classifier saved at outputs/stacker.joblib")
+    stacker_path = st.sidebar.text_input("Stacker path", value="outputs/stacker.joblib")
+    config['ensemble_mode'] = ensemble_mode
+    config['stacker_path'] = stacker_path
     
     st.markdown("---")
     
