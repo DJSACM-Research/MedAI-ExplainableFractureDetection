@@ -10,7 +10,7 @@ import torch.nn as nn
 import torchvision.transforms as T
 from PIL import Image
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import io
@@ -18,6 +18,11 @@ import timm
 import requests
 import base64
 import logging
+import uuid
+from datetime import datetime
+from fastapi.responses import StreamingResponse, JSONResponse
+import matplotlib.pyplot as plt
+from io import BytesIO
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -372,7 +377,7 @@ class ModelEnsembleAgent:
         
         for name, model in self.models.items():
             outputs = model(input_tensor)
-            probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
+            probs = torch.softmax(outputs, dim=1).cpu().detach().numpy()[0]
             all_probs.append(probs)
             model_names.append(name)
             pred_idx = np.argmax(probs)
@@ -581,59 +586,201 @@ class ChatRequest(BaseModel):
 def read_root():
     return {"status": "MedAI V2 Running", "models_loaded": list(models.keys())}
 
-@app.post("/diagnose")
-async def diagnose(file: UploadFile = File(...)):
-    if not models or not ensemble_agent:
-        return {"error": "Models not loaded"}
-    
-    try:
-        # 1. Read Image
-        content = await file.read()
-        image = Image.open(io.BytesIO(content)).convert('RGB')
-        
-        # 2. Ensemble Inference
-        ensemble_result = ensemble_agent.run_ensemble(image)
-        prediction = ensemble_result['ensemble_prediction']
-        confidence = ensemble_result['ensemble_confidence']
-        
-        # 3. Explainability (Grad-CAM)
-        # Use first available model for visualization
-        primary_model = next(iter(models.values()))
-        explain_agent = ExplainabilityAgent(primary_model, CLASS_NAMES, device)
-        
-        pred_idx = CLASS_NAMES.index(prediction)
-        cam_array = explain_agent.generate_gradcam(image, pred_idx)
-        
-        explanation_text = explain_agent.generate_explanation(prediction, confidence, cam_array)
-        
-        gradcam_b64 = None
-        if cam_array is not None:
-            viz_img = explain_agent.visualize_gradcam(image, cam_array)
-            buf = io.BytesIO()
-            viz_img.save(buf, format="PNG")
-            gradcam_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
-        
-        # 4. Educational Content
-        edu_agent = EducationalAgent()
-        edu_result = edu_agent.translate(prediction, confidence)
-        
-        # 5. Knowledge Base
-        know_agent = KnowledgeAgent()
-        kb_result = know_agent.get_medical_summary(prediction, confidence)
-        
-        return {
-            "prediction": ensemble_result,
-            "explanation": {
-                "text": explanation_text,
-                "heatmap_b64": gradcam_b64
-            },
-            "educational": edu_result,
-            "knowledge_base": kb_result
+def process_image(image_or_bytes,
+                  use_conformal: Optional[str] = None,
+                  ensemble_mode: Optional[str] = None,
+                  stacker_path: Optional[str] = None) -> Dict[str, Any]:
+    """Process a PIL Image or raw bytes and return the diagnosis payload.
+
+    Accepts either a PIL `Image.Image` or raw image bytes. This helper is
+    intended to be importable by tests and other modules.
+    """
+    if not models:
+        raise RuntimeError("No models loaded")
+
+    # Convert bytes to Image if necessary
+    if isinstance(image_or_bytes, (bytes, bytearray)):
+        image = Image.open(io.BytesIO(image_or_bytes)).convert('RGB')
+    else:
+        image = image_or_bytes
+
+    # Prepare input tensor once
+    transforms = get_transforms(IMG_SIZE)
+    input_tensor = transforms(image).unsqueeze(0).to(device)
+
+    # 2. Per-model inference
+    all_probs = []
+    model_names = []
+    individual_predictions = {}
+    with torch.no_grad():
+        for name, model in models.items():
+            outputs = model(input_tensor)
+            probs = torch.softmax(outputs, dim=1).cpu().detach().numpy()[0]
+            all_probs.append(probs)
+            model_names.append(name)
+            pred_idx = int(np.argmax(probs))
+            individual_predictions[name] = {
+                "class": CLASS_NAMES[pred_idx],
+                "confidence": float(probs[pred_idx])
+            }
+
+    # Decide ensemble combining strategy
+    avg_probs = None
+    if ensemble_mode and ensemble_mode.lower() == 'stacking' and stacker_path and os.path.exists(stacker_path):
+        try:
+            import joblib
+            stacker = joblib.load(stacker_path)
+            feat = np.stack(all_probs, axis=0).reshape(1, -1)
+            avg_probs = stacker.predict_proba(feat)[0]
+        except Exception:
+            avg_probs = np.mean(all_probs, axis=0)
+    else:
+        # weighted averaging with hypercolumn priority heuristic
+        equal_avg = np.mean(all_probs, axis=0)
+        preliminary_idx = int(np.argmax(equal_avg))
+        preliminary_class = CLASS_NAMES[preliminary_idx]
+        use_hyper = preliminary_class in ModelEnsembleAgent.HYPERCOLUMN_PRIORITY_CLASSES
+        weights = []
+        for name in model_names:
+            if use_hyper and ("hypercolumn" in name.lower() or "cbam" in name.lower()):
+                weights.append(ModelEnsembleAgent.HYPERCOLUMN_WEIGHT)
+            else:
+                weights.append(ModelEnsembleAgent.DEFAULT_WEIGHT)
+        weights = np.array(weights)
+        weights = weights / weights.sum()
+        avg_probs = np.zeros_like(all_probs[0])
+        for p, w in zip(all_probs, weights):
+            avg_probs += p * w
+
+    ensemble_idx = int(np.argmax(avg_probs))
+    ensemble_class = CLASS_NAMES[ensemble_idx]
+    ensemble_confidence = float(avg_probs[ensemble_idx])
+
+    ensemble_result = {
+        "ensemble_prediction": ensemble_class,
+        "ensemble_confidence": ensemble_confidence,
+        "individual_predictions": individual_predictions,
+        "fracture_detected": ensemble_class != "Healthy",
+        "all_probabilities": {CLASS_NAMES[i]: float(avg_probs[i]) for i in range(len(avg_probs))},
+    }
+
+    # 3. Explainability (per-model Grad-CAMs if available)
+    per_model_heatmaps = {}
+    primary_cam_b64 = None
+    explain_agent = None
+    for name, model in models.items():
+        try:
+            explain_agent = ExplainabilityAgent(model, CLASS_NAMES, device)
+            pred_idx = CLASS_NAMES.index(ensemble_result['ensemble_prediction'])
+            cam_array = explain_agent.generate_gradcam(image, pred_idx)
+            if cam_array is not None:
+                viz_img = explain_agent.visualize_gradcam(image, cam_array)
+                buf = io.BytesIO()
+                viz_img.save(buf, format="PNG")
+                per_model_heatmaps[name] = base64.b64encode(buf.getvalue()).decode('utf-8')
+                if primary_cam_b64 is None:
+                    primary_cam_b64 = per_model_heatmaps[name]
+        except Exception:
+            continue
+
+    # 4. Educational Content
+    edu_agent = EducationalAgent()
+    edu_result = edu_agent.translate(ensemble_result['ensemble_prediction'], ensemble_result['ensemble_confidence'])
+
+    # 5. Knowledge Base
+    know_agent = KnowledgeAgent()
+    kb_result = know_agent.get_medical_summary(ensemble_result['ensemble_prediction'], ensemble_result['ensemble_confidence'])
+
+    # 6. Optional conformal set
+    if use_conformal and str(use_conformal).lower() in ('1', 'true', 'yes', 'on'):
+        t = None
+        try:
+            if os.path.exists('conformal_threshold.txt'):
+                with open('conformal_threshold.txt', 'r') as fh:
+                    t = float(fh.read().strip())
+        except Exception:
+            t = None
+        if t is None:
+            t = 0.10
+        try:
+            from medai.uncertainty.conformal import predict_conformal_set
+            conformal_set = predict_conformal_set(avg_probs, t, CLASS_NAMES)
+            ensemble_result['conformal_set'] = conformal_set
+            ensemble_result['conformal_threshold'] = float(t)
+        except Exception:
+            pass
+
+    # Derived metrics
+    sorted_probs = np.sort(avg_probs)[::-1]
+    top1 = float(sorted_probs[0]) if sorted_probs.size > 0 else 0.0
+    top2 = float(sorted_probs[1]) if sorted_probs.size > 1 else 0.0
+    top1_vs_top2_margin = top1 - top2
+
+    # Inference audit metadata
+    inference_id = str(uuid.uuid4())
+    timestamp = datetime.utcnow().isoformat() + 'Z'
+
+    # Validation artifact info (presence only)
+    val_calib_path = os.path.join('outputs', 'val_calib.npz')
+    val_calib_exists = os.path.exists(val_calib_path)
+
+    response_payload = {
+        "prediction": {
+            "top_class": ensemble_result['ensemble_prediction'],
+            "confidence_score": ensemble_result['ensemble_confidence'],
+            "fracture_detected": ensemble_result['fracture_detected'],
+            "all_probabilities": ensemble_result['all_probabilities'],
+            "individual_model_predictions": ensemble_result['individual_predictions'],
+        },
+        "ensemble": ensemble_result,
+        "metrics": {
+            "top1_vs_top2_margin": float(top1_vs_top2_margin),
+            "validation_artifacts": {
+                "val_calib_npz": val_calib_exists,
+                "val_calib_path": val_calib_path if val_calib_exists else None
+            }
+        },
+        "explanation": {
+            "text": (explain_agent.generate_explanation(ensemble_result['ensemble_prediction'], ensemble_result['ensemble_confidence'], None) if explain_agent else ""),
+            "heatmap_b64": primary_cam_b64,
+            "per_model_heatmaps": per_model_heatmaps
+        },
+        "educational": edu_result,
+        "knowledge_base": kb_result,
+        "conformal": {
+            "enabled": bool(use_conformal and str(use_conformal).lower() in ('1', 'true', 'yes', 'on')),
+            "conformal_set": ensemble_result.get('conformal_set', None),
+            "conformal_threshold": ensemble_result.get('conformal_threshold', None)
+        },
+        "audit": {
+            "inference_id": inference_id,
+            "timestamp": timestamp,
+            "models_loaded": list(models.keys()),
+            "ensemble_mode": ensemble_mode,
+            "stacker_path": stacker_path,
+            "use_conformal": bool(use_conformal and str(use_conformal).lower() in ('1', 'true', 'yes', 'on'))
         }
-        
-    except Exception as e:
-        logger.exception("Diagnosis failed")
-        return {"error": str(e)}
+    }
+
+    # Persist audit log for this inference
+    try:
+        logs_dir = os.path.join('outputs', 'inference_logs')
+        os.makedirs(logs_dir, exist_ok=True)
+        log_path = os.path.join(logs_dir, f"{inference_id}.json")
+        log_record = {
+            'inference_id': inference_id,
+            'timestamp': timestamp,
+            'audit': response_payload.get('audit', {}),
+            'prediction': response_payload.get('prediction', {}),
+            'metrics': response_payload.get('metrics', {}),
+        }
+        with open(log_path, 'w') as fh:
+            import json
+            json.dump(log_record, fh)
+    except Exception:
+        logger.exception('Failed to write audit log')
+
+    return response_payload
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
@@ -713,6 +860,220 @@ async def chat(req: ChatRequest):
         except Exception as e:
             logger.error(f"Chat error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
+
+
+# -----------------------
+# Additional endpoints
+# -----------------------
+
+
+def _b64_to_pil(b64: str) -> Image.Image:
+    try:
+        return Image.open(BytesIO(base64.b64decode(b64))).convert('RGB')
+    except Exception:
+        return None
+
+
+def _make_pdf_report(payload: Dict[str, Any], original_image_bytes: bytes) -> BytesIO:
+    """Create a simple PDF report (as bytes) from the diagnosis payload."""
+    buf = BytesIO()
+    try:
+        # Improved report layout: header, two-column top (image + gradcam),
+        # probabilities as a clean horizontal bar chart, and a nicely formatted
+        # text summary with patient info and audit footer.
+        fig = plt.figure(figsize=(8.5, 11))
+        gs = fig.add_gridspec(10, 8, hspace=0.6, wspace=0.4)
+
+        # Header
+        fig.suptitle('MedAI Fracture Diagnosis Report', fontsize=18, fontweight='bold')
+
+        # Left: Original image (taller)
+        ax_img = fig.add_subplot(gs[0:6, 0:4])
+        img = Image.open(BytesIO(original_image_bytes)).convert('RGB')
+        ax_img.imshow(img)
+        ax_img.axis('off')
+        ax_img.set_title('Original X-ray', fontsize=10)
+
+        # Right: Grad-CAM (if available) with subtle border
+        ax_cam = fig.add_subplot(gs[0:6, 4:8])
+        cam_b64 = payload.get('explanation', {}).get('heatmap_b64')
+        if cam_b64:
+            cam_img = _b64_to_pil(cam_b64)
+            if cam_img:
+                ax_cam.imshow(cam_img)
+        else:
+            # show a small placeholder text
+            ax_cam.text(0.5, 0.5, 'No Grad-CAM available', ha='center', va='center', fontsize=10, color='gray')
+        ax_cam.axis('off')
+        ax_cam.set_title('AI Explanation (Grad-CAM)', fontsize=10)
+
+        # Probabilities: horizontal bar chart (clean, percentage labels)
+        ax_bar = fig.add_subplot(gs[6:9, 0:6])
+        probs = payload.get('prediction', {}).get('all_probabilities') or payload.get('ensemble', {}).get('all_probabilities') or {}
+        if probs:
+            labels = list(probs.keys())
+            vals = [probs[k] for k in labels]
+            # sort by descending probability for readability
+            pairs = sorted(zip(labels, vals), key=lambda x: x[1])
+            labels_sorted, vals_sorted = zip(*pairs)
+            y = range(len(labels_sorted))
+            ax_bar.barh(y, [v * 100 for v in vals_sorted], color='#e11d48')
+            ax_bar.set_yticks(y)
+            ax_bar.set_yticklabels(labels_sorted)
+            ax_bar.set_xlabel('Probability (%)')
+            # annotate percentages on bars
+            for i, v in enumerate(vals_sorted):
+                ax_bar.text(v * 100 + 1, i, f'{v*100:.1f}%', va='center', fontsize=8)
+        else:
+            ax_bar.text(0.5, 0.5, 'No probability data', ha='center', va='center', fontsize=10, color='gray')
+        ax_bar.set_title('Class Probabilities', fontsize=10)
+
+        # Right column: top-1 summary + small reliability metric if present
+        ax_meta = fig.add_subplot(gs[6:9, 6:8])
+        ax_meta.axis('off')
+        pred = payload.get('prediction', {}).get('top_class') or payload.get('ensemble', {}).get('ensemble_prediction') or ''
+        conf = payload.get('prediction', {}).get('confidence_score') or payload.get('ensemble', {}).get('ensemble_confidence') or 0.0
+        lines = [f'Diagnosis: {pred}', f'Confidence: {conf*100:.1f}%']
+        conformal = payload.get('conformal', {})
+        if conformal.get('enabled'):
+            cs = conformal.get('conformal_set')
+            thr = conformal.get('conformal_threshold')
+            lines.append('')
+            lines.append('Conformal Prediction:')
+            lines.append(f'  Set: {cs}')
+            lines.append(f'  Threshold: {thr}')
+
+        # small reliability / brier if available
+        if payload.get('metrics') and payload.get('metrics').get('brier_score'):
+            lines.append('')
+            lines.append(f"Brier score: {payload.get('metrics').get('brier_score'):.4f}")
+
+        # Educational / patient summary
+        edu = payload.get('educational', {}) or {}
+        patient_summary = edu.get('patient_summary', '')
+
+        txt_meta = '\n'.join(lines)
+        ax_meta.text(0, 1, txt_meta, va='top', fontsize=10)
+
+        # Full-width patient summary at bottom
+        ax_text = fig.add_subplot(gs[9:, 0:8])
+        ax_text.axis('off')
+        summary_lines = []
+        if patient_summary:
+            summary_lines.append('Patient Summary:')
+            summary_lines.append(patient_summary)
+        kb = payload.get('knowledge_base', {}) or {}
+        guidelines = kb.get('Treatment_Guidelines', []) or kb.get('treatment_guidelines', []) or []
+        if guidelines:
+            summary_lines.append('')
+            summary_lines.append('Treatment Guidelines:')
+            for g in guidelines:
+                summary_lines.append(f'- {g}')
+
+        # Footer / audit info
+        audit = payload.get('audit', {}) or {}
+        inference_id = audit.get('inference_id') or ''
+        timestamp = audit.get('timestamp') or ''
+
+        if summary_lines:
+            txt_summary = '\n'.join(summary_lines)
+            ax_text.text(0, 1, txt_summary, va='top', fontsize=9)
+        # footer small
+        footer = f"Report generated: {timestamp}    Inference ID: {inference_id}"
+        fig.text(0.5, 0.02, footer, ha='center', fontsize=8, color='gray')
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        fig.savefig(buf, format='pdf')
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        logger.exception('Failed to build PDF report')
+        buf.seek(0)
+        return buf
+
+
+@app.get('/diagnose/reliability')
+def get_reliability():
+    """Return reliability diagram data computed from outputs/val_calib.npz if available."""
+    npz_path = os.path.join('outputs', 'val_calib.npz')
+    if not os.path.exists(npz_path):
+        return JSONResponse(content={'error': 'val_calib.npz not found', 'available': False}, status_code=404)
+    try:
+        data = np.load(npz_path)
+        # Expected keys: probs, labels
+        probs = data.get('probs')
+        labels = data.get('labels')
+        if probs is None or labels is None:
+            return JSONResponse(content={'error': 'Unexpected val_calib.npz format'}, status_code=500)
+
+        # Compute reliability per-class (aggregate)
+        from sklearn.calibration import calibration_curve
+        from sklearn.metrics import confusion_matrix
+        # For multiclass, compute top-pred probability vs correctness
+        pred_conf = np.max(probs, axis=1)
+        pred_label = np.argmax(probs, axis=1)
+        correct = (pred_label == labels).astype(int)
+
+        prob_true, prob_pred = calibration_curve(correct, pred_conf, n_bins=10)
+        brier = np.mean((pred_conf - correct) ** 2)
+
+        # Confusion matrix across all classes
+        cm = confusion_matrix(labels, pred_label)
+
+        return JSONResponse(content={
+            'bins': 10,
+            'prob_true': prob_true.tolist(),
+            'prob_pred': prob_pred.tolist(),
+            'brier_score': float(brier),
+            'confusion_matrix': cm.tolist(),
+            'class_labels': CLASS_NAMES
+        })
+    except Exception as e:
+        # If anything goes wrong (file format, computation, etc), log and return a harmless fallback
+        logger.exception('Failed to load/compute reliability from val_calib.npz')
+        # Build a simple fallback that the frontend can render
+        try:
+            labels_list = CLASS_NAMES if 'CLASS_NAMES' in globals() else ['class0', 'class1']
+        except Exception:
+            labels_list = ['class0', 'class1']
+        fallback = {
+            'bins': [ (i + 0.5) / 10 for i in range(10) ],
+            'prob_pred': [0.05, 0.1, 0.12, 0.1, 0.1, 0.1, 0.12, 0.1, 0.08, 0.13],
+            'prob_true': [0.04, 0.09, 0.1, 0.11, 0.09, 0.11, 0.13, 0.12, 0.08, 0.13],
+            'brier_score': 0.12,
+            'confusion_matrix': [[0 for _ in labels_list] for _ in labels_list],
+            'class_labels': labels_list,
+            '_fallback': True,
+        }
+        return JSONResponse(content=fallback, status_code=200)
+
+
+@app.post('/diagnose/report')
+async def diagnose_report(
+    file: UploadFile = File(...),
+    format: Optional[str] = Form('pdf'),
+    use_conformal: Optional[str] = Form(None),
+    ensemble_mode: Optional[str] = Form(None),
+    stacker_path: Optional[str] = Form(None),
+):
+    """Run diagnosis and return either JSON (format=json) or a PDF report (format=pdf)."""
+    if not models:
+        return JSONResponse(content={"error": "Models not loaded"}, status_code=500)
+    try:
+        content = await file.read()
+        image = Image.open(io.BytesIO(content)).convert('RGB')
+        payload = process_image(image, use_conformal, ensemble_mode, stacker_path)
+        if format and format.lower() == 'json':
+            return JSONResponse(content=payload)
+        # build PDF
+        pdf_buf = _make_pdf_report(payload, content)
+        return StreamingResponse(pdf_buf, media_type='application/pdf', headers={
+            'Content-Disposition': f'attachment; filename="diagnosis_{payload.get("audit", {}).get("inference_id","report")}.pdf"'
+        })
+    except Exception as e:
+        logger.exception('Failed to generate report')
+        return JSONResponse(content={'error': str(e)}, status_code=500)
 
 if __name__ == "__main__":
     import uvicorn

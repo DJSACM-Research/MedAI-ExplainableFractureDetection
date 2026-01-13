@@ -23,7 +23,10 @@ import torch.nn as nn
 import torchvision.transforms as T
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-from uncertainty.conformal import predict_conformal_set
+try:
+    from uncertainty.conformal import predict_conformal_set
+except Exception:
+    from medai.uncertainty.conformal import predict_conformal_set
 
 # Attempt to import optional dependencies
 try:
