@@ -2,6 +2,13 @@
 
 import os
 from dotenv import load_dotenv
+import sys
+# Add src to path for imports - handles both local (../src) and container/HF (./src) structures
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(current_dir, '../src')) # Local: src is sibling
+sys.path.append(os.path.join(current_dir, '..'))     # Local: parent of medai
+sys.path.append(os.path.join(current_dir, 'src'))    # HF: src is subdir
+sys.path.append(current_dir)                         # HF: current dir is root
 
 load_dotenv() # Load environment variables from .env file
 
@@ -23,6 +30,17 @@ from datetime import datetime
 from fastapi.responses import StreamingResponse, JSONResponse
 import matplotlib.pyplot as plt
 from io import BytesIO
+
+# Import Agents for Critic Flow (Loaded from self-contained module for cloud deployment)
+try:
+    from medai_agent_module import CriticAgent, evaluate_consensus
+except ImportError:
+    logger.warning("medai_agent_module not found in local path. attempting Standard Import.")
+    try:
+        from medai.agents.critic_agent import CriticAgent
+        from medai.utils.consensus import evaluate_consensus
+    except ImportError:
+        pass
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1073,6 +1091,69 @@ async def diagnose_report(
         })
     except Exception as e:
         logger.exception('Failed to generate report')
+        return JSONResponse(content={'error': str(e)}, status_code=500)
+
+@app.post('/diagnose/critic')
+async def diagnose_with_critic(
+    file: UploadFile = File(...),
+    use_conformal: Optional[str] = Form(None),
+    ensemble_mode: Optional[str] = Form(None),
+    stacker_path: Optional[str] = Form(None)
+):
+    if not models:
+        return JSONResponse(content={"error": "Models not loaded"}, status_code=500)
+    
+    try:
+        content = await file.read()
+        image = Image.open(io.BytesIO(content)).convert('RGB')
+        
+        # 1. Standard Pipeline (Vision -> Class -> Knowledge -> Text)
+        payload = process_image(image, use_conformal, ensemble_mode, stacker_path)
+        
+        # 2. Agentic Upgrade: Critic Agent
+        try:
+             # Lazy import attempting to use the sys.path we modified earlier or the local module
+             try:
+                 from medai_agent_module import CriticAgent, evaluate_consensus
+             except ImportError:
+                 from medai.agents.critic_agent import CriticAgent
+                 from medai.utils.consensus import evaluate_consensus
+             
+             # Initialize Critic (lazy load logic in class handles connections)
+             critic = CriticAgent()
+             
+             # Extract necessary context from payload
+             pred = payload['prediction']
+             kb = payload.get('knowledge_base', {})
+             
+             label = pred['top_class']
+             conf = pred['confidence_score']
+             # Extract definition
+             definition = kb.get('Type_Definition') or "No definition available."
+             
+             # 3. Critic Review
+             review = critic.review_diagnosis(image, label, conf, definition)
+             
+             # 4. Consensus
+             consensus = evaluate_consensus(
+                 vision_prediction={'label': label, 'confidence': conf},
+                 critic_review=review
+             )
+             
+             # 5. Append to payload
+             payload['critic_review'] = review
+             payload['consensus'] = consensus
+             payload['final_status'] = consensus['final_decision']
+             
+        except Exception as e:
+             logger.error(f"Critic Agent failed: {e}")
+             payload['critic_error'] = str(e)
+             payload['final_status'] = "approved_unchecked"
+
+        return JSONResponse(content=payload)
+        
+    except Exception as e:
+        logger.exception('Failed during critic diagnosis')
         return JSONResponse(content={'error': str(e)}, status_code=500)
 
 if __name__ == "__main__":

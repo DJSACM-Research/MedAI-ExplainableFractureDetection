@@ -11,6 +11,31 @@ A Streamlit application integrating all six agents:
 """
 
 import os
+import sys
+import logging
+from dotenv import load_dotenv
+
+# Load environment variables from .env file immediately
+load_dotenv()
+
+# Configure Logging to Console
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
+# Add project root and src to sys.path to allow imports from src.medai...
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(current_dir) # src
+project_root = os.path.dirname(src_dir) # root
+
+if src_dir not in sys.path:
+    sys.path.append(src_dir)
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
 import io
 import tempfile
 import numpy as np
@@ -27,6 +52,21 @@ try:
     from uncertainty.conformal import predict_conformal_set
 except Exception:
     from medai.uncertainty.conformal import predict_conformal_set
+
+# Import Agentic Components
+try:
+    # Try importing with fully qualified name if root in path
+    try:
+        from src.medai.agents.critic_agent import CriticAgent
+        from src.medai.utils.consensus import evaluate_consensus
+    except ImportError:
+        # Fallback to medai... if src in path
+        from medai.agents.critic_agent import CriticAgent
+        from medai.utils.consensus import evaluate_consensus
+except ImportError as e:
+    logger.warning(f"Could not import Agentic Components: {e}")
+    CriticAgent = None
+    evaluate_consensus = None
 
 # Attempt to import optional dependencies
 try:
@@ -1074,6 +1114,11 @@ def render_sidebar():
     conformal_threshold_value = st.sidebar.number_input(
         "Manual threshold value (used if file missing)", value=0.10, format="%.6f"
     )
+
+    # Agentic Reasoning Settings
+    st.sidebar.subheader("Agentic Reasoning")
+    enable_critic = st.sidebar.checkbox("Enable Critic Agent (Self-Correction)", value=True,
+                                       help="Use MedGemma VLM to double-check the diagnosis against visual evidence.")
     
     return {
         "checkpoint_dir": checkpoint_dir,
@@ -1086,7 +1131,8 @@ def render_sidebar():
         ,
         "use_conformal": use_conformal,
         "conformal_threshold_path": conformal_threshold_path,
-        "conformal_threshold_value": float(conformal_threshold_value)
+        "conformal_threshold_value": float(conformal_threshold_value),
+        "enable_critic": enable_critic
     }
 
 
@@ -1193,6 +1239,46 @@ def render_diagnosis_results():
         except Exception:
             pass
 
+
+def render_critic_review():
+    """Renders the Critic Agent review section."""
+    if "critic_review" not in st.session_state or not st.session_state.critic_review:
+        return
+
+    st.markdown("---")
+    st.subheader("🕵️ Critic Agent Review (Self-Correction)")
+    
+    review = st.session_state.critic_review
+    consensus = st.session_state.get("consensus")
+    
+    if "error" in review:
+        st.error(f"Critic Agent Error: {review['error']}")
+        return
+
+    # Use columns to show Verdict vs Explanation
+    c1, c2 = st.columns([1, 2])
+    
+    with c1:
+        verdict = review.get("verdict", "uncertain").upper()
+        if verdict == "YES":
+             st.success("✅ **Critic Agrees**")
+        elif verdict == "NO":
+             st.error("❌ **Critic Disagrees**")
+        else:
+             st.warning("⚠️ **Critic Uncertain**")
+        
+        if consensus:
+             decision = consensus.get("final_decision")
+             if decision == "flagged":
+                 st.error("🚩 **Flagged for Human Review**")
+                 st.markdown(f"_Reason: {consensus.get('reason')}_")
+             else:
+                 st.info("System Consensus: Approved")
+    
+    with c2:
+        st.markdown("**Critic's Analysis:**")
+        st.info(review.get("explanation", "No explanation provided."))
+        st.caption(f"Based on MedGemma analysis of visual features vs. '{st.session_state.ensemble_result.get('ensemble_prediction')}' definition.")
 
 def render_explainability():
     """Renders the explainability section."""
@@ -1414,6 +1500,45 @@ def run_analysis(image: Image.Image, config: dict, device):
             st.session_state.ensemble_result["ensemble_confidence"]
         )
     
+    # Agent 5.5: Critic Agent (if enabled)
+    if config.get("enable_critic", True):
+        # Only run if we have a valid result
+        if st.session_state.ensemble_result and st.session_state.medical_summary and "error" not in st.session_state.medical_summary:
+            with st.spinner("Critic Agent reviewing diagnosis..."):
+                try:
+                     # Remove lazy import since we handle it at top level with sys.path fix
+                     # from medai.agents.critic_agent import CriticAgent
+                     # from medai.utils.consensus import evaluate_consensus
+                     
+                     st.info("Critic Agent active: Consulting MedGemma regarding visual evidence...")
+                     
+                     if CriticAgent is None:
+                        raise ImportError("CriticAgent module could not be imported. Check logs.")
+
+                     # Check environment specifically for Streamlit context
+                     mode = os.getenv("MEDGEMMA_MODE", "hf_spaces")
+                     # Note: On simple Streamlit hosting, local mode usually fails memory.
+                     
+                     critic = CriticAgent(mode=mode)
+                     
+                     diagnosis = st.session_state.ensemble_result["ensemble_prediction"]
+                     conf = st.session_state.ensemble_result["ensemble_confidence"]
+                     definition = st.session_state.medical_summary.get("Type_Definition") or "No definition"
+                     
+                     review = critic.review_diagnosis(image, diagnosis, conf, definition)
+                     consensus = evaluate_consensus(
+                         {"label": diagnosis, "confidence": conf}, review
+                     )
+                     
+                     st.session_state.critic_review = review
+                     st.session_state.consensus = consensus
+                     st.success("Critic Agent check complete.")
+                except Exception as e:
+                    st.error(f"Critic Agent failed: {e}")
+                    # Don't block the rest of the flow
+                    st.session_state.critic_review = {"error": str(e)}
+                    st.session_state.consensus = None
+
     # Agent 6: Patient Interaction Agent
     if "error" not in st.session_state.medical_summary:
         st.session_state.patient_agent = PatientInteractionAgent(
@@ -1486,6 +1611,7 @@ def main():
     
     with col_results:
         render_diagnosis_results()
+        render_critic_review()
     
     st.markdown("---")
     

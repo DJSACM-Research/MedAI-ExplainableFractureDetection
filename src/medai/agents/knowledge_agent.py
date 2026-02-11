@@ -419,6 +419,20 @@ class KnowledgeAgent:
             "Long_Term_Prognosis": raw.get("prognosis_notes"),
         }
 
+    # ----------------- Helper for Critic Agent -----------------
+    def get_context_for_label(self, label: str) -> str:
+        """
+        Retrieves the definition context for the Critic Agent.
+        """
+        # We can reuse get_medical_summary with a dummy confidence
+        summary = self.get_medical_summary(label, 1.0)
+        if "error" in summary:
+            # Fallback based on knowledge base keys slightly matching
+            # Or generic definition
+            return f"Condition '{label}' regarding bone integrity."
+        
+        return summary.get("Type_Definition", "No definition found.")
+
     # ----------------- RAG over MedAI Sources -----------------
     def retrieve_sources(self, query: str, top_k: int = TOP_K_RESULTS) -> List[Dict[str, Any]]:
         query = query.strip()

@@ -53,6 +53,19 @@ interface DiagnosisResponse {
     conformal_set?: string[];
     conformal_threshold?: number;
   };
+  critic_review?: {
+    verdict: "yes" | "no" | "uncertain";
+    critic_confidence: number;
+    explanation: string;
+    flagged_for_human: boolean;
+    error?: string;
+  };
+  critic_error?: string;
+  consensus?: {
+    final_decision: "approved" | "flagged";
+    reason: string;
+    critic_score: number;
+  };
 }
 
 export default function DiagnosePage() {
@@ -62,9 +75,10 @@ export default function DiagnosePage() {
   const [result, setResult] = useState<DiagnosisResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [useConformal, setUseConformal] = useState<boolean>(true);
+  const [enableCritic, setEnableCritic] = useState<boolean>(true);
   const [ensembleMode, setEnsembleMode] = useState<string>("weighted");
   const [stackerPath, setStackerPath] = useState<string>(
-    "/outputs/stacker.joblib"
+    "/outputs/stacker.joblib",
   );
   const [visibleModelHeatmaps, setVisibleModelHeatmaps] = useState<
     Record<string, boolean>
@@ -110,7 +124,13 @@ export default function DiagnosePage() {
 
     try {
       formData.append("format", "json");
-      const response = await fetch("/api/diagnose/report", {
+
+      // Choose endpoint based on Critic flag
+      const endpoint = enableCritic
+        ? "/api/diagnose/critic"
+        : "/api/diagnose/report";
+
+      const response = await fetch(endpoint, {
         method: "POST",
         body: formData,
       });
@@ -160,12 +180,14 @@ export default function DiagnosePage() {
         knowledge_base: payload.knowledge_base || {},
         metrics: payload.metrics || {},
         conformal: payload.conformal || {},
+        critic_review: payload.critic_review,
+        consensus: payload.consensus,
       } as DiagnosisResponse;
 
       if (normalized.explanation.per_model_heatmaps) {
         const vis: Record<string, boolean> = {};
         Object.keys(normalized.explanation.per_model_heatmaps).forEach(
-          (k) => (vis[k] = false)
+          (k) => (vis[k] = false),
         );
         setVisibleModelHeatmaps(vis);
       }
@@ -180,7 +202,7 @@ export default function DiagnosePage() {
         } else {
           // backend returned non-ok -> show friendly fallback
           const labels = Object.keys(
-            normalized.prediction.all_probabilities || {}
+            normalized.prediction.all_probabilities || {},
           );
           const sample = {
             bins: Array.from({ length: 10 }, (_, i) => (i + 0.5) / 10),
@@ -191,7 +213,7 @@ export default function DiagnosePage() {
             brier_score: 0.12,
             confusion_matrix: labels.length
               ? Array.from({ length: labels.length }, () =>
-                  Array(labels.length).fill(0)
+                  Array(labels.length).fill(0),
                 )
               : [[0]],
             class_labels: labels.length ? labels : ["class0", "class1"],
@@ -202,7 +224,7 @@ export default function DiagnosePage() {
       } catch (e) {
         // likely backend offline (ECONNREFUSED) — use friendly fallback so UI doesn't break
         const labels = Object.keys(
-          normalized.prediction.all_probabilities || {}
+          normalized.prediction.all_probabilities || {},
         );
         const sample = {
           bins: Array.from({ length: 10 }, (_, i) => (i + 0.5) / 10),
@@ -213,7 +235,7 @@ export default function DiagnosePage() {
           brier_score: 0.12,
           confusion_matrix: labels.length
             ? Array.from({ length: labels.length }, () =>
-                Array(labels.length).fill(0)
+                Array(labels.length).fill(0),
               )
             : [[0]],
           class_labels: labels.length ? labels : ["class0", "class1"],
@@ -392,6 +414,16 @@ export default function DiagnosePage() {
                     Enable conformal prediction
                   </span>
                 </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={enableCritic}
+                    onChange={(e) => setEnableCritic(e.target.checked)}
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    Enable Agentic Critic (Self-Correction)
+                  </span>
+                </label>
                 <div className="flex gap-2 items-center">
                   <label className="text-sm text-muted-foreground">
                     Ensemble mode:
@@ -471,7 +503,7 @@ export default function DiagnosePage() {
                       <p className="text-muted-foreground mt-1">
                         Confidence:{" "}
                         {(result.prediction.ensemble_confidence * 100).toFixed(
-                          1
+                          1,
                         )}
                         %
                       </p>
@@ -511,6 +543,105 @@ export default function DiagnosePage() {
                   </Card>
                 </div>
 
+                {/* Agentic Critic Error Section */}
+                {result.critic_error && (
+                  <Card className="border-l-4 border-l-orange-500">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-xl flex items-center gap-2 text-orange-700">
+                        ⚠️ Critic Agent Unavailable
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-sm">{result.critic_error}</p>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Agentic Critic Review Section */}
+                {result.critic_review && (
+                  <Card
+                    className={`border-l-4 ${
+                      result.critic_review.verdict === "yes"
+                        ? "border-l-green-500"
+                        : result.critic_review.verdict === "no"
+                          ? "border-l-red-500"
+                          : "border-l-yellow-500"
+                    }`}
+                  >
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                      <div className="space-y-1">
+                        <CardTitle className="text-xl flex items-center gap-2">
+                          🕵️ Critic Agent Review
+                        </CardTitle>
+                        <CardDescription>
+                          MedGemma VLM Second Opinion
+                        </CardDescription>
+                      </div>
+                      <div
+                        className={`px-3 py-1 rounded-full text-sm font-bold ${
+                          result.critic_review.verdict === "yes"
+                            ? "bg-green-100 text-green-700"
+                            : result.critic_review.verdict === "no"
+                              ? "bg-red-100 text-red-700"
+                              : "bg-yellow-100 text-yellow-700"
+                        }`}
+                      >
+                        Verdict: {result.critic_review.verdict.toUpperCase()}
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid md:grid-cols-3 gap-6">
+                        <div className="md:col-span-2">
+                          <h4 className="font-semibold mb-1">
+                            Critic Explanation
+                          </h4>
+                          <p className="text-sm text-muted-foreground bg-muted/50 p-3 rounded-md italic">
+                            &quot;{result.critic_review.explanation}&quot;
+                          </p>
+                        </div>
+                        <div className="space-y-3">
+                          <h4 className="font-semibold mb-1">
+                            Consensus Status
+                          </h4>
+                          {result.consensus && (
+                            <div className="space-y-2 text-sm">
+                              <div className="flex justify-between">
+                                <span>Status:</span>
+                                <span
+                                  className={`font-bold ${
+                                    result.consensus.final_decision ===
+                                    "flagged"
+                                      ? "text-red-500"
+                                      : "text-green-500"
+                                  }`}
+                                >
+                                  {result.consensus.final_decision === "flagged"
+                                    ? "🚩 FLAGGED"
+                                    : "✅ APPROVED"}
+                                </span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span>Critic Conf:</span>
+                                <span>
+                                  {(
+                                    result.critic_review.critic_confidence * 100
+                                  ).toFixed(0)}
+                                  %
+                                </span>
+                              </div>
+                              {result.consensus.reason && (
+                                <div className="text-xs text-muted-foreground border-t pt-2 mt-1">
+                                  {result.consensus.reason}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
                 {/* Explanation & Heatmap */}
                 <div className="grid md:grid-cols-2 gap-8">
                   <Card>
@@ -527,7 +658,7 @@ export default function DiagnosePage() {
                           </div>
                           <div className="grid grid-cols-2 gap-3">
                             {Object.entries(
-                              (result as any).explanation.per_model_heatmaps
+                              (result as any).explanation.per_model_heatmaps,
                             ).map(([mname, b64]) => (
                               <div
                                 key={mname}
@@ -667,7 +798,7 @@ export default function DiagnosePage() {
                         <div className="text-sm text-muted-foreground mb-2">
                           <strong>Top-1 vs Top-2 margin:</strong>{" "}
                           {(result.metrics.top1_vs_top2_margin * 100).toFixed(
-                            2
+                            2,
                           )}
                           %
                         </div>
@@ -683,7 +814,7 @@ export default function DiagnosePage() {
                             style={{
                               width: `${Math.min(
                                 100,
-                                (result.metrics.top1_vs_top2_margin || 0) * 100
+                                (result.metrics.top1_vs_top2_margin || 0) * 100,
                               )}%`,
                             }}
                           />
@@ -709,7 +840,7 @@ export default function DiagnosePage() {
                           <ReliabilityChart
                             bins={reliabilityData.prob_pred.map(
                               (_: any, i: number) =>
-                                (i + 0.5) / reliabilityData.prob_pred.length
+                                (i + 0.5) / reliabilityData.prob_pred.length,
                             )}
                             predicted={reliabilityData.prob_pred}
                             observed={reliabilityData.prob_true}
@@ -746,7 +877,7 @@ export default function DiagnosePage() {
                       <div className="mt-2 text-sm">
                         <div className="grid gap-2 mt-2">
                           {Object.entries(
-                            result.prediction.individual_model_predictions
+                            result.prediction.individual_model_predictions,
                           ).map(([m, info]: any) => (
                             <div
                               key={m}

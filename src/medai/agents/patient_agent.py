@@ -3,7 +3,7 @@ import streamlit as st
 import requests
 import json
 from typing import Dict, Any, List
-from knowledge_agent import KnowledgeAgent # Import the Retrieval Agent
+from .knowledge_agent import KnowledgeAgent # Import the Retrieval Agent
 
 # --- Configuration for OpenRouter ---
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
