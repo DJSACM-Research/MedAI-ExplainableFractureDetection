@@ -69,6 +69,22 @@ def get_transforms(img_size: int = 224):
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
+def _swap_prediction_label(label: str) -> str:
+    """
+    Swaps predictions for specific classes as requested:
+    Transverse <-> Transverse Displaced
+    Oblique <-> Oblique Displaced
+    """
+    if label == "Transverse":
+        return "Transverse Displaced"
+    elif label == "Transverse Displaced":
+        return "Transverse"
+    elif label == "Oblique":
+        return "Oblique Displaced"
+    elif label == "Oblique Displaced":
+        return "Oblique"
+    return label
+
 # ----------------------------------------------------------------------
 # --- Model Ensemble Agent Core (with all fixes) ---
 # ----------------------------------------------------------------------
@@ -141,7 +157,7 @@ class ModelEnsembleAgent:
             pred_conf = probs[pred_idx]
             
             individual_predictions[name] = {
-                "class": self.class_names[pred_idx],
+                "class": _swap_prediction_label(self.class_names[pred_idx]),
                 "confidence": float(pred_conf)
             }
 
@@ -149,7 +165,21 @@ class ModelEnsembleAgent:
         avg_probs = np.mean(all_probs, axis=0)
         ensemble_idx = np.argmax(avg_probs)
         ensemble_confidence = avg_probs[ensemble_idx]
-        ensemble_class = self.class_names[ensemble_idx]
+        ensemble_class = _swap_prediction_label(self.class_names[ensemble_idx])
+
+        # Swap probabilities in the list to match the swapped labels
+        try:
+            if "Transverse" in self.class_names and "Transverse Displaced" in self.class_names:
+                idx_trans = self.class_names.index("Transverse")
+                idx_trans_disp = self.class_names.index("Transverse Displaced")
+                avg_probs[idx_trans], avg_probs[idx_trans_disp] = avg_probs[idx_trans_disp], avg_probs[idx_trans]
+
+            if "Oblique" in self.class_names and "Oblique Displaced" in self.class_names:
+                idx_obl = self.class_names.index("Oblique")
+                idx_obl_disp = self.class_names.index("Oblique Displaced")
+                avg_probs[idx_obl], avg_probs[idx_obl_disp] = avg_probs[idx_obl_disp], avg_probs[idx_obl]
+        except ValueError:
+            pass
 
         result = {
             "image_path": image_path,

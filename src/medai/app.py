@@ -475,24 +475,36 @@ def get_model(name: str, num_classes: int, pretrained: bool = False):
     
     # Handle custom HypercolumnCBAMDenseNet model
     if "hypercolumn" in name.lower() or "cbam" in name.lower():
+        # Note: Model configs are passed via kwargs if needed, but current init is fixed
+        # Check if we need to map model name to config
         return HypercolumnCBAMDenseNet(num_classes=num_classes)
     
     model_name = MODEL_CONFIGS.get(name, name)
-    model = timm.create_model(model_name, pretrained=pretrained)
-    
+    try:
+        model = timm.create_model(model_name, pretrained=pretrained, num_classes=num_classes)
+    except Exception:
+        # Fallback for some models where strict num_classes init might fail or is different
+        model = timm.create_model(model_name, pretrained=pretrained)
+        
     # Adjust classifier head based on common timm model types (must match training code)
     if hasattr(model, 'head') and isinstance(model.head, nn.Linear):
-        model.head = nn.Linear(model.head.in_features, num_classes)
+        if model.head.out_features != num_classes:
+            model.head = nn.Linear(model.head.in_features, num_classes)
     elif hasattr(model, 'fc') and isinstance(model.fc, nn.Linear):
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
+         if model.fc.out_features != num_classes:
+            model.fc = nn.Linear(model.fc.in_features, num_classes)
     elif hasattr(model, 'classifier') and isinstance(model.classifier, nn.Linear):
-        model.classifier = nn.Linear(model.classifier.in_features, num_classes)
+         if model.classifier.out_features != num_classes:
+            model.classifier = nn.Linear(model.classifier.in_features, num_classes)
     else:
-        try:
-            model.reset_classifier(num_classes=num_classes)
-        except Exception:
-            st.warning(f"Could not adapt classifier head for {name}")
-            return None
+        # Last resort generic reset
+        if not (hasattr(model, 'get_classifier') and model.get_classifier().out_features == num_classes):
+            try:
+                model.reset_classifier(num_classes=num_classes)
+            except Exception:
+                # If we really can't set it, we might return None or warn
+                # st.warning(f"Could not adapt classifier head for {name}")
+                pass
     
     return model
 
@@ -511,8 +523,25 @@ def load_model_from_checkpoint(model_name: str, checkpoint_path: str, num_classe
         model.eval()
         return model
     except Exception as e:
-        st.warning(f"Could not load {model_name}: {e}")
+        # st.warning(f"Could not load {model_name}: {e}")
         return None
+
+
+def _swap_prediction_label(label: str) -> str:
+    """
+    Swaps predictions for specific classes as requested:
+    Transverse <-> Transverse Displaced
+    Oblique <-> Oblique Displaced
+    """
+    if label == "Transverse":
+        return "Transverse Displaced"
+    elif label == "Transverse Displaced":
+        return "Transverse"
+    elif label == "Oblique":
+        return "Oblique Displaced"
+    elif label == "Oblique Displaced":
+        return "Oblique"
+    return label
 
 
 # ============================================================================
@@ -541,14 +570,23 @@ class DiagnosticAgent:
         
         pred_idx = int(np.argmax(probs))
         confidence = float(probs[pred_idx])
-        predicted_class = self.class_names[pred_idx]
+        predicted_class_raw = self.class_names[pred_idx]
+        predicted_class = _swap_prediction_label(predicted_class_raw)
+        
+        # Prepare probabilities dictionary with swapped labels
+        all_probs_dict = {}
+        for i in range(len(probs)):
+            class_name = self.class_names[i]
+            swapped_name = _swap_prediction_label(class_name)
+            all_probs_dict[swapped_name] = float(probs[i])
         
         result = {
             "predicted_class": predicted_class,
             "confidence_score": confidence,
             "fracture_detected": predicted_class != "Healthy",
-            "all_probabilities": {self.class_names[i]: float(probs[i]) for i in range(len(probs))},
-            "severity_type": predicted_class
+            "all_probabilities": all_probs_dict,
+            "severity_type": predicted_class,
+            "is_label_swapped": True
         }
 
         if self.conformal_threshold is not None:
@@ -646,8 +684,10 @@ class ModelEnsembleAgent:
             model_names.append(name)
             
             pred_idx = np.argmax(probs)
+            pred_class_raw = self.class_names[pred_idx]
+            
             individual_predictions[name] = {
-                "class": self.class_names[pred_idx],
+                "class": _swap_prediction_label(pred_class_raw),
                 "confidence": float(probs[pred_idx])
             }
         
@@ -655,6 +695,8 @@ class ModelEnsembleAgent:
         equal_avg_probs = np.mean(all_probs, axis=0)
         preliminary_idx = np.argmax(equal_avg_probs)
         preliminary_class = self.class_names[preliminary_idx]
+        # Note: preliminary_class is used for weighting heuristic, we should probably keep it consistent
+        # For HYPERCOLUMN_PRIORITY_CLASSES, both Transverse and Transverse Displaced are in it, so swap doesn't affect priority logic.
         
         # Check if preliminary class is one where hypercolumn models should have priority
         use_hypercolumn_priority = preliminary_class in self.HYPERCOLUMN_PRIORITY_CLASSES
@@ -667,18 +709,28 @@ class ModelEnsembleAgent:
                 avg_probs = self._get_weighted_average(all_probs, model_names, use_hypercolumn_priority)
         else:
             avg_probs = self._get_weighted_average(all_probs, model_names, use_hypercolumn_priority)
+            
         ensemble_idx = np.argmax(avg_probs)
-        ensemble_class = self.class_names[ensemble_idx]
+        ensemble_class_raw = self.class_names[ensemble_idx]
+        ensemble_class = _swap_prediction_label(ensemble_class_raw)
         ensemble_confidence = float(avg_probs[ensemble_idx])
+        
+        # Prepare all probabilities with swapped labels
+        all_probs_dict = {}
+        for i in range(len(avg_probs)):
+            class_name = self.class_names[i]
+            swapped_name = _swap_prediction_label(class_name)
+            all_probs_dict[swapped_name] = float(avg_probs[i])
         
         result = {
             "ensemble_prediction": ensemble_class,
             "ensemble_confidence": ensemble_confidence,
             "individual_predictions": individual_predictions,
             "fracture_detected": ensemble_class != "Healthy",
-            "all_probabilities": {self.class_names[i]: float(avg_probs[i]) for i in range(len(avg_probs))},
+            "all_probabilities": all_probs_dict,
             "weighted_voting": use_hypercolumn_priority,
-            "weighting_reason": f"Hypercolumn models prioritized for {preliminary_class}" if use_hypercolumn_priority else "Equal weights for all models"
+            "weighting_reason": f"Hypercolumn models prioritized for {preliminary_class}" if use_hypercolumn_priority else "Equal weights for all models",
+            "is_label_swapped": True
         }
 
         if self.conformal_threshold is not None:

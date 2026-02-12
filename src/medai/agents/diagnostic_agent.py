@@ -45,6 +45,22 @@ def get_transforms(img_size: int = 224):
         T.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
     ])
 
+def _swap_prediction_label(label: str) -> str:
+    """
+    Swaps predictions for specific classes as requested:
+    Transverse <-> Transverse Displaced
+    Oblique <-> Oblique Displaced
+    """
+    if label == "Transverse":
+        return "Transverse Displaced"
+    elif label == "Transverse Displaced":
+        return "Transverse"
+    elif label == "Oblique":
+        return "Oblique Displaced"
+    elif label == "Oblique Displaced":
+        return "Oblique"
+    return label
+
 # --- 2. DIAGNOSTIC AGENT CORE ---
 
 class DiagnosticAgent:
@@ -110,10 +126,51 @@ class DiagnosticAgent:
         predicted_idx = torch.argmax(probabilities).item()
         confidence = probabilities[predicted_idx].item()
         uncertainty = 1.0 - confidence
-        predicted_class_name = self.class_names[predicted_idx]
+        
+        predicted_class_name_raw = self.class_names[predicted_idx]
+        predicted_class_name = _swap_prediction_label(predicted_class_name_raw)
 
         # Determine Fracture Presence (assuming 'Healthy' is a known class)
         is_fracture_detected = (predicted_class_name != 'Healthy')
+        
+        # We need to be careful with all_probabilities as list.
+        # Ideally we should return a dict, but if legacy code expects list, we might just swap values in the list
+        # such that the value for 'Transverse' (index 6) is now the value that was at index 7?
+        # No, that's confusing.
+        # The user request is "predict the opposite".
+        # So if model predicts "Transverse" (index 6), we say "Transverse Displaced".
+        # The confidence should be coming from index 6.
+        # But if we return a list of probs, and the consumer maps it to class_names, they will see high prob at index 6 -> Transverse.
+        # So we MUST swap the values in the list if we want standard consumers to see "Transverse Displaced" having the high probability?
+        # Wait, if we swap values: probs[6] <-> probs[7].
+        # Then probs[6] (Transverse slot) gets the value of Transverse Displaced (which was low). So Transverse becomes low.
+        # And probs[7] (Transverse Displaced slot) gets the value of Transverse (which was high). So Transverse Displaced becomes high.
+        # If the consumer reads max(probs), they find index 7 is high -> Transverse Displaced. Correct.
+        
+        # So I will swap the probabilities in the list for the corresponding indices.
+        # Assuming typical class order... if class_names is passed in, I should find indices from it.
+        
+        probs_np = probabilities.cpu().numpy()
+        
+        try:
+            # Find indices safely
+            if "Transverse" in self.class_names and "Transverse Displaced" in self.class_names:
+                idx_trans = self.class_names.index("Transverse")
+                idx_trans_disp = self.class_names.index("Transverse Displaced")
+                # Swap
+                probs_np[idx_trans], probs_np[idx_trans_disp] = probs_np[idx_trans_disp], probs_np[idx_trans]
+
+            if "Oblique" in self.class_names and "Oblique Displaced" in self.class_names:
+                idx_obl = self.class_names.index("Oblique")
+                idx_obl_disp = self.class_names.index("Oblique Displaced")
+                # Swap
+                probs_np[idx_obl], probs_np[idx_obl_disp] = probs_np[idx_obl_disp], probs_np[idx_obl]
+            
+        except ValueError:
+            pass
+            
+        uncertainty = 1.0 - confidence # This is approximate, really entropy
+        
         result = {
             "image_path": image_path,
             "fracture_detected": is_fracture_detected,
@@ -121,7 +178,7 @@ class DiagnosticAgent:
             "severity_type": predicted_class_name,  # Proxy for severity
             "confidence_score": confidence,
             "uncertainty_score": uncertainty,
-            "all_probabilities": probabilities.cpu().numpy().tolist()
+            "all_probabilities": probs_np.tolist()
         }
 
         # Add conformal prediction set when a threshold is provided

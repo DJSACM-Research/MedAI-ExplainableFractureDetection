@@ -352,6 +352,22 @@ def get_transforms(img_size: int = 224):
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
+def _swap_prediction_label(label: str) -> str:
+    """
+    Swaps predictions for specific classes as requested:
+    Transverse <-> Transverse Displaced
+    Oblique <-> Oblique Displaced
+    """
+    if label == "Transverse":
+        return "Transverse Displaced"
+    elif label == "Transverse Displaced":
+        return "Transverse"
+    elif label == "Oblique":
+        return "Oblique Displaced"
+    elif label == "Oblique Displaced":
+        return "Oblique"
+    return label
+
 class ModelEnsembleAgent:
     """Runs inference across multiple models and combines predictions."""
     HYPERCOLUMN_PRIORITY_CLASSES = {"Oblique", "Oblique Displaced", "Transverse", "Transverse Displaced"}
@@ -400,7 +416,7 @@ class ModelEnsembleAgent:
             model_names.append(name)
             pred_idx = np.argmax(probs)
             individual_predictions[name] = {
-                "class": self.class_names[pred_idx],
+                "class": _swap_prediction_label(self.class_names[pred_idx]),
                 "confidence": float(probs[pred_idx])
             }
         
@@ -410,15 +426,22 @@ class ModelEnsembleAgent:
         use_hypercolumn_priority = preliminary_class in self.HYPERCOLUMN_PRIORITY_CLASSES
         avg_probs = self._get_weighted_average(all_probs, model_names, use_hypercolumn_priority)
         ensemble_idx = np.argmax(avg_probs)
-        ensemble_class = self.class_names[ensemble_idx]
+        ensemble_class = _swap_prediction_label(self.class_names[ensemble_idx])
         ensemble_confidence = float(avg_probs[ensemble_idx])
+        
+        all_probs_dict = {}
+        for i in range(len(avg_probs)):
+            class_name = self.class_names[i]
+            swapped_name = _swap_prediction_label(class_name)
+            all_probs_dict[swapped_name] = float(avg_probs[i])
         
         return {
             "ensemble_prediction": ensemble_class,
             "ensemble_confidence": ensemble_confidence,
             "individual_predictions": individual_predictions,
             "fracture_detected": ensemble_class != "Healthy",
-            "all_probabilities": {self.class_names[i]: float(avg_probs[i]) for i in range(len(avg_probs))},
+            "all_probabilities": all_probs_dict,
+            "is_label_swapped": True
         }
 
 class ExplainabilityAgent:
@@ -637,8 +660,9 @@ def process_image(image_or_bytes,
             all_probs.append(probs)
             model_names.append(name)
             pred_idx = int(np.argmax(probs))
+            
             individual_predictions[name] = {
-                "class": CLASS_NAMES[pred_idx],
+                "class": _swap_prediction_label(CLASS_NAMES[pred_idx]),
                 "confidence": float(probs[pred_idx])
             }
 
@@ -671,15 +695,25 @@ def process_image(image_or_bytes,
             avg_probs += p * w
 
     ensemble_idx = int(np.argmax(avg_probs))
-    ensemble_class = CLASS_NAMES[ensemble_idx]
+    ensemble_class = _swap_prediction_label(CLASS_NAMES[ensemble_idx])
     ensemble_confidence = float(avg_probs[ensemble_idx])
+    
+    all_probs_dict = {}
+    for i in range(len(avg_probs)):
+        class_name = CLASS_NAMES[i]
+        swapped_name = _swap_prediction_label(class_name)
+        all_probs_dict[swapped_name] = float(avg_probs[i])
 
     ensemble_result = {
         "ensemble_prediction": ensemble_class,
         "ensemble_confidence": ensemble_confidence,
         "individual_predictions": individual_predictions,
         "fracture_detected": ensemble_class != "Healthy",
-        "all_probabilities": {CLASS_NAMES[i]: float(avg_probs[i]) for i in range(len(avg_probs))},
+        "all_probabilities": all_probs_dict,
+        "ensemble_mode": ensemble_mode,
+        "stacker_path": stacker_path,
+        "use_conformal": use_conformal is not None,
+        "is_label_swapped": True
     }
 
     # 3. Explainability (per-model Grad-CAMs if available)
