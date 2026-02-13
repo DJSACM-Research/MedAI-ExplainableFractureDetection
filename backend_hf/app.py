@@ -620,7 +620,7 @@ def load_models_startup():
 class ChatRequest(BaseModel):
     message: str
     context: Dict[str, Any]
-    history: List[Dict[str, str]]
+    history: List[Dict[str, Any]]
     user_data: Optional[Dict[str, str]] = None
 
 @app.get("/")
@@ -888,17 +888,29 @@ async def chat(req: ChatRequest):
                 headers={
                     "Authorization": f"Bearer {api_key}", 
                     "Content-Type": "application/json",
-                    "HTTP-Referer": "https://medai-app.com", # Required by OpenRouter
-                    "X-Title": "MedAI Fracture Detection"
+                    # "HTTP-Referer": "https://medai-app.com", # Required by OpenRouter
+                    # "X-Title": "MedAI Fracture Detection"
                 },
-                json={"model": model, "messages": messages},
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "reasoning": {"enabled": True}
+                },
                 timeout=60
             )
             resp.raise_for_status()
             data = resp.json()
             if 'choices' not in data or not data['choices']:
                  raise ValueError("Invalid API response: no choices found")
-            return {"reply": data['choices'][0]['message']['content']}
+            
+            message = data['choices'][0]['message']
+            response_data = {"reply": message['content']}
+            
+            # Extract and return reasoning_details if present (for experimental models)
+            if 'reasoning_details' in message:
+                response_data['reasoning_details'] = message['reasoning_details']
+                
+            return response_data
             
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 429 and attempt < max_retries:
