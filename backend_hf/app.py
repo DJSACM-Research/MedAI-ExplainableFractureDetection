@@ -840,11 +840,11 @@ async def chat(req: ChatRequest):
     import time
     import random
 
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable not set")
     
-    model = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.2-3b-instruct:free")
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
     
     # Construct System Prompt based on context
     medical_context = req.context
@@ -858,7 +858,7 @@ async def chat(req: ChatRequest):
     - Medical History: {req.user_data.get('history', 'None provided')}
         """
 
-    system_prompt = f"""
+    system_prompt_text = f"""
     You are MedAI, a helpful medical assistant specializing in bone fractures.
     
     Current Diagnosis Context:
@@ -876,7 +876,36 @@ async def chat(req: ChatRequest):
     - If the user's medical history suggests complications (e.g., diabetes, osteoporosis), mention relevant precautions.
     """
     
-    messages = [{"role": "system", "content": system_prompt}] + req.history + [{"role": "user", "content": req.message}]
+    # Convert history types to Gemini format
+    gemini_contents = []
+    
+    # Gemini requires alternating roles: user -> model -> user -> model
+    # We assume history is correctly ordered
+    for msg in req.history:
+        role = "user" if msg.get("role") == "user" else "model"
+        gemini_contents.append({
+            "role": role,
+            "parts": [{"text": msg.get("content", "")}]
+        })
+    
+    # Append current message
+    gemini_contents.append({
+        "role": "user",
+        "parts": [{"text": req.message}]
+    })
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    
+    payload = {
+        "contents": gemini_contents,
+        "systemInstruction": {
+            "parts": [{"text": system_prompt_text}]
+        },
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 1000
+        }
+    }
     
     max_retries = 3
     base_delay = 2
@@ -884,33 +913,27 @@ async def chat(req: ChatRequest):
     for attempt in range(max_retries + 1):
         try:
             resp = requests.post(
-                OPENROUTER_ENDPOINT,
-                headers={
-                    "Authorization": f"Bearer {api_key}", 
-                    "Content-Type": "application/json",
-                    # "HTTP-Referer": "https://medai-app.com", # Required by OpenRouter
-                    # "X-Title": "MedAI Fracture Detection"
-                },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "reasoning": {"enabled": True}
-                },
+                url,
+                headers={"Content-Type": "application/json"},
+                json=payload,
                 timeout=60
             )
-            resp.raise_for_status()
-            data = resp.json()
-            if 'choices' not in data or not data['choices']:
-                 raise ValueError("Invalid API response: no choices found")
             
-            message = data['choices'][0]['message']
-            response_data = {"reply": message['content']}
-            
-            # Extract and return reasoning_details if present (for experimental models)
-            if 'reasoning_details' in message:
-                response_data['reasoning_details'] = message['reasoning_details']
+            if resp.status_code != 200:
+                logger.error(f"Gemini API Error: {resp.text}")
+                # Don't retry on 400s (bad request)
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    raise HTTPException(status_code=resp.status_code, detail=f"Gemini API Error: {resp.text}")
+                resp.raise_for_status()
                 
-            return response_data
+            data = resp.json()
+            if 'candidates' not in data or not data['candidates']:
+                 raise ValueError("Invalid API response: no candidates found")
+            
+            content_parts = data['candidates'][0]['content']['parts']
+            reply_text = "".join([part.get('text', '') for part in content_parts])
+            
+            return {"reply": reply_text}
             
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 429 and attempt < max_retries:
