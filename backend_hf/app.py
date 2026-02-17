@@ -44,6 +44,10 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Global Image Store for Chat Agent (In-Memory for Demo)
+# In production, use Redis or S3/Blob storage
+IMAGE_STORE = {}
+
 # Try optional imports
 try:
     from pytorch_grad_cam import GradCAM
@@ -873,6 +877,7 @@ class ChatRequest(BaseModel):
     context: Dict[str, Any]
     history: List[Dict[str, Any]]
     user_data: Optional[Dict[str, str]] = None
+    inference_id: Optional[str] = None # Allow frontend to pass the image ID
 
 @app.get("/")
 def read_root():
@@ -899,6 +904,14 @@ def process_image(image_or_bytes,
     # Prepare input tensor once
     transforms = get_transforms(IMG_SIZE)
     input_tensor = transforms(image).unsqueeze(0).to(device)
+    
+    # Generate Inference ID early for image storage
+    inference_id = str(uuid.uuid4())
+    # Save image to global store for potential chat usage
+    # Limit size to prevent OOM in long run or use LRU cache
+    if len(IMAGE_STORE) > 100:
+        IMAGE_STORE.clear() # Simple cleanup strategy for demo
+    IMAGE_STORE[inference_id] = image.copy()
 
     # 2. Per-model inference
     all_probs = []
@@ -1031,7 +1044,7 @@ def process_image(image_or_bytes,
     top1_vs_top2_margin = top1 - top2
 
     # Inference audit metadata
-    inference_id = str(uuid.uuid4())
+    # inference_id already generated above
     timestamp = datetime.utcnow().isoformat() + 'Z'
 
     # Validation artifact info (presence only)
@@ -1098,117 +1111,60 @@ def process_image(image_or_bytes,
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    """Simple wrapper for OpenRouter chat with retry logic and context."""
-    import time
-    import random
+    """Refactored Chat Interface using Multi-Agent Pipeline (LangGraph)."""
+    try:
+        # Import dynamically to avoid circular dependencies with app.py
+        from backend_hf.patient_agent_graph import create_patient_graph
+        from langchain_core.messages import HumanMessage, AIMessage
+    except ImportError:
+        try:
+             from patient_agent_graph import create_patient_graph
+             from langchain_core.messages import HumanMessage, AIMessage
+        except ImportError as e:
+            logger.error(f"Could not import patient_agent_graph: {e}")
+            raise HTTPException(status_code=500, detail="Multi-Agent System Error")
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable not set")
+    # Map request to LangChain messages
+    messages = []
     
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
-    
-    # Construct System Prompt based on context
-    medical_context = req.context
-    
-    user_info = ""
-    if req.user_data:
-        user_info = f"""
-    Patient Context:
-    - Age: {req.user_data.get('age', 'Not specified')}
-    - Gender: {req.user_data.get('gender', 'Not specified')}
-    - Medical History: {req.user_data.get('history', 'None provided')}
-        """
-
-    system_prompt_text = f"""
-    You are MedAI, a helpful medical assistant specializing in bone fractures.
-    
-    Current Diagnosis Context:
-    - Diagnosis: {medical_context.get('Diagnosis', 'Unknown')}
-    - Severity: {medical_context.get('Severity_Rating', 'Unknown')}
-    - Definition: {medical_context.get('Type_Definition', '')}
-    {user_info}
-    
-    Treatment Guidelines:
-    {chr(10).join(['- '+g for g in medical_context.get('Treatment_Guidelines', [])])}
-    
-    Instructions:
-    - Answer the patient's questions based on the diagnosis and their specific context (age, history).
-    - Be empathetic and clear, but ALWAYS clarify you are an AI assistant, not a doctor.
-    - If the user's medical history suggests complications (e.g., diabetes, osteoporosis), mention relevant precautions.
-    """
-    
-    # Convert history types to Gemini format
-    gemini_contents = []
-    
-    # Gemini requires alternating roles: user -> model -> user -> model
-    # We assume history is correctly ordered
+    # Process history
     for msg in req.history:
-        role = "user" if msg.get("role") == "user" else "model"
-        gemini_contents.append({
-            "role": role,
-            "parts": [{"text": msg.get("content", "")}]
-        })
+        content = msg.get("content", "")
+        if msg.get("role") == "user":
+            messages.append(HumanMessage(content=content))
+        else:
+            messages.append(AIMessage(content=content))
+            
+    # Add current user message
+    messages.append(HumanMessage(content=req.message))
     
-    # Append current message
-    gemini_contents.append({
-        "role": "user",
-        "parts": [{"text": req.message}]
-    })
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-    
-    payload = {
-        "contents": gemini_contents,
-        "systemInstruction": {
-            "parts": [{"text": system_prompt_text}]
-        },
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 1000
-        }
+    # Initialize State
+    initial_state = {
+        "messages": messages,
+        "user_context": req.user_data or {},
+        "medical_context": req.context or {},
+        "inference_id": req.inference_id # Pass to graph
     }
     
-    max_retries = 3
-    base_delay = 2
-    
-    for attempt in range(max_retries + 1):
-        try:
-            resp = requests.post(
-                url,
-                headers={"Content-Type": "application/json"},
-                json=payload,
-                timeout=60
-            )
-            
-            if resp.status_code != 200:
-                logger.error(f"Gemini API Error: {resp.text}")
-                # Don't retry on 400s (bad request)
-                if 400 <= resp.status_code < 500 and resp.status_code != 429:
-                    raise HTTPException(status_code=resp.status_code, detail=f"Gemini API Error: {resp.text}")
-                resp.raise_for_status()
-                
-            data = resp.json()
-            if 'candidates' not in data or not data['candidates']:
-                 raise ValueError("Invalid API response: no candidates found")
-            
-            content_parts = data['candidates'][0]['content']['parts']
-            reply_text = "".join([part.get('text', '') for part in content_parts])
-            
-            return {"reply": reply_text}
-            
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429 and attempt < max_retries:
-                # Exponential backoff with jitter
-                sleep_time = (base_delay * (2 ** attempt)) + random.uniform(0, 1)
-                logger.warning(f"Rate limited (429). Retrying in {sleep_time:.2f}s... (Attempt {attempt+1}/{max_retries})")
-                time.sleep(sleep_time)
-                continue
-            logger.error(f"Chat error: {e}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"Upstream API Error: {str(e)}")
-        except Exception as e:
-            logger.error(f"Chat error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+    # Run Graph
+    try:
+        graph = create_patient_graph()
+        
+        # Invoke the graph
+        # This will run the PatientInteractionAgent (Supervisor) which cyclically calls tools
+        # until it decides to respond.
+        result = graph.invoke(initial_state)
+        
+        # Get final response from the last message
+        last_message = result["messages"][-1]
+        response_text = last_message.content
+        
+        return {"reply": response_text}
+        
+    except Exception as e:
+        logger.error(f"Error in Multi-Agent Pipeline: {e}")
+        # Fallback to simple error message or previous simple implementation if critical
+        raise HTTPException(status_code=500, detail=f"Agent Processing Error: {str(e)}")
 
 
 # -----------------------

@@ -1,6 +1,10 @@
 # Core Web Frameworks
 streamlit>=1.28.0
 
+langchain>=1.2.10
+langgraph>=1.0.8
+langchain-google-genai>=4.2.0
+
 # HTTP Clients
 requests>=2.31.0
 
