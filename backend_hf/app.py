@@ -340,12 +340,13 @@ CHROMA_DB_PATH = "./chroma_db"
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 # ============================================================================
-# AGENTS
+# AGENTS / MODULES
 # ============================================================================
 
 def get_transforms(img_size: int = 224):
     return T.Compose([
         T.Resize((img_size, img_size)),
+        T.CenterCrop(img_size),
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
@@ -366,11 +367,14 @@ def _swap_prediction_label(label: str) -> str:
         return "Oblique"
     return label
 
-class ModelEnsembleAgent:
+class EnsembleModule:
     """Runs inference across multiple models and combines predictions."""
+    
+    # Classes where hypercolumn models should get more weight
     HYPERCOLUMN_PRIORITY_CLASSES = {"Oblique", "Oblique Displaced", "Transverse", "Transverse Displaced"}
-    # Tuned on validation set (see scripts/prepare_val_and_calibrate.py)
+    # Weight for hypercolumn models when priority class is detected
     HYPERCOLUMN_WEIGHT = 1.0
+    # Weight for other models
     DEFAULT_WEIGHT = 1.0
     
     def __init__(self, models: Dict[str, nn.Module], class_names: List[str], device, img_size: int = 224):
@@ -380,29 +384,43 @@ class ModelEnsembleAgent:
         self.transforms = get_transforms(img_size)
     
     def _is_hypercolumn_model(self, model_name: str) -> bool:
+        """Check if a model is a hypercolumn/column model."""
         return "hypercolumn" in model_name.lower() or "cbam" in model_name.lower()
     
     def _get_weighted_average(self, all_probs: List[np.ndarray], model_names: List[str], 
                                use_hypercolumn_priority: bool) -> np.ndarray:
+        """
+        Compute weighted average of probabilities.
+        """
         weights = []
         for name in model_names:
             if use_hypercolumn_priority and self._is_hypercolumn_model(name):
                 weights.append(self.HYPERCOLUMN_WEIGHT)
             else:
                 weights.append(self.DEFAULT_WEIGHT)
+        
+        # Normalize weights
         weights = np.array(weights)
-        weights = weights / weights.sum()
+        if weights.sum() > 0:
+            weights = weights / weights.sum()
+        else:
+             weights = np.ones(len(weights)) / len(weights)
+        
+        # Compute weighted average
         weighted_probs = np.zeros_like(all_probs[0])
         for prob, weight in zip(all_probs, weights):
             weighted_probs += prob * weight
+        
         return weighted_probs
     
     @torch.no_grad()
     def run_ensemble(self, image: Image.Image) -> Dict[str, Any]:
+        """Runs ensemble inference on a PIL image."""
         if not self.models:
             return {"error": "No models loaded"}
         
         input_tensor = self.transforms(image).unsqueeze(0).to(self.device)
+        
         all_probs = []
         model_names = []
         individual_predictions = {}
@@ -412,21 +430,33 @@ class ModelEnsembleAgent:
             probs = torch.softmax(outputs, dim=1).cpu().detach().numpy()[0]
             all_probs.append(probs)
             model_names.append(name)
+            
             pred_idx = np.argmax(probs)
+            # Use original class name for lookup
+            pred_class_raw = self.class_names[pred_idx]
+            
             individual_predictions[name] = {
-                "class": _swap_prediction_label(self.class_names[pred_idx]),
+                "class": _swap_prediction_label(pred_class_raw),
                 "confidence": float(probs[pred_idx])
             }
         
+        # First pass: compute equal-weighted average to determine likely class
         equal_avg_probs = np.mean(all_probs, axis=0)
         preliminary_idx = np.argmax(equal_avg_probs)
         preliminary_class = self.class_names[preliminary_idx]
+        
+        # Check if preliminary class is one where hypercolumn models should have priority
         use_hypercolumn_priority = preliminary_class in self.HYPERCOLUMN_PRIORITY_CLASSES
+        
+        # Second pass: compute final weighted average based on detected class
         avg_probs = self._get_weighted_average(all_probs, model_names, use_hypercolumn_priority)
+            
         ensemble_idx = np.argmax(avg_probs)
-        ensemble_class = _swap_prediction_label(self.class_names[ensemble_idx])
+        ensemble_class_raw = self.class_names[ensemble_idx]
+        ensemble_class = _swap_prediction_label(ensemble_class_raw)
         ensemble_confidence = float(avg_probs[ensemble_idx])
         
+        # Prepare all probabilities with swapped labels
         all_probs_dict = {}
         for i in range(len(avg_probs)):
             class_name = self.class_names[i]
@@ -439,10 +469,13 @@ class ModelEnsembleAgent:
             "individual_predictions": individual_predictions,
             "fracture_detected": ensemble_class != "Healthy",
             "all_probabilities": all_probs_dict,
+            "weighted_voting": use_hypercolumn_priority,
             "is_label_swapped": True
         }
 
-class ExplainabilityAgent:
+class ExplanationModule:
+    """Generates Grad-CAM visualizations and textual explanations."""
+    
     def __init__(self, model, class_names: List[str], device, body_part: str = "bone"):
         self.model = model
         self.class_names = class_names
@@ -452,13 +485,19 @@ class ExplainabilityAgent:
         self.target_layer = self._get_target_layer()
     
     def _get_target_layer(self):
-        if self.model is None: return None
+        """Gets the appropriate target layer for Grad-CAM."""
+        if self.model is None:
+            return None
+        
+        # Try common layer names
         for attr in ['layer4', 'features', 'stages', 'blocks']:
             if hasattr(self.model, attr):
                 layer = getattr(self.model, attr)
                 if isinstance(layer, nn.Sequential) and len(layer) > 0:
                     return [layer[-1]]
                 return [layer]
+        
+        # Fallback: get last conv layer
         layers = []
         for module in self.model.modules():
             if isinstance(module, nn.Conv2d):
@@ -466,31 +505,47 @@ class ExplainabilityAgent:
         return [layers[-1]] if layers else None
     
     def generate_gradcam(self, image: Image.Image, target_class: int = None) -> Optional[np.ndarray]:
+        """Generates Grad-CAM heatmap."""
         if not GRADCAM_AVAILABLE or self.model is None or self.target_layer is None:
             return None
+        
         try:
             input_tensor = self.transforms(image).unsqueeze(0).to(self.device)
+            # Ensure model is in eval mode
+            self.model.eval()
+            
             with GradCAM(model=self.model, target_layers=self.target_layer) as cam:
                 targets = [ClassifierOutputTarget(target_class)] if target_class is not None else None
                 grayscale_cam = cam(input_tensor=input_tensor, targets=targets)
                 return grayscale_cam[0]
         except Exception as e:
-            print(f"Grad-CAM error: {e}")
+            logger.warning(f"Grad-CAM generation failed: {e}")
             return None
     
     def visualize_gradcam(self, image: Image.Image, cam_array: np.ndarray) -> Image.Image:
-        if cam_array is None: return image
-        img_array = np.array(image.resize((224, 224))) / 255.0
-        visualization = show_cam_on_image(img_array.astype(np.float32), cam_array, use_rgb=True)
-        return Image.fromarray(visualization)
-
+        """Overlays Grad-CAM on the original image."""
+        if cam_array is None:
+            return image
+        
+        try:
+            # Normalize image to 0-1
+            img_array = np.array(image.resize((224, 224))) / 255.0
+            
+            # Create heatmap overlay
+            visualization = show_cam_on_image(img_array.astype(np.float32), cam_array, use_rgb=True)
+            return Image.fromarray(visualization)
+        except Exception:
+            return image
+    
     def generate_explanation(self, prediction: str, confidence: float, cam_array: np.ndarray = None) -> str:
+        """Generates textual explanation based on diagnosis and Grad-CAM."""
         if prediction == "Healthy":
             if confidence > 0.90:
                 return f"The {self.body_part} appears **healthy** with high confidence ({confidence:.2f}). No fracture pattern was detected."
             else:
                 return f"The {self.body_part} is likely **healthy** ({confidence:.2f}), though some areas warrant closer examination."
         
+        # Analyze heatmap if available
         location_text = ""
         if cam_array is not None:
             norm_cam = cam_array / (cam_array.max() + 1e-8)
@@ -498,12 +553,33 @@ class ExplainabilityAgent:
             if len(y_indices) > 0 and len(x_indices) > 0:
                 avg_x = np.mean(x_indices) / cam_array.shape[1]
                 avg_y = np.mean(y_indices) / cam_array.shape[0]
+                
                 x_loc = "right side" if avg_x > 0.65 else ("left side" if avg_x < 0.35 else "center")
                 y_loc = "distal end" if avg_y > 0.65 else ("proximal end" if avg_y < 0.35 else "middle region")
                 location_text = f" The model's attention is focused on the **{y_loc}** of the **{x_loc}**."
         
-        conf_desc = "high" if confidence > 0.9 else ("moderate" if confidence > 0.7 else "low")
-        return f"A fracture pattern consistent with **{prediction}** is detected with {conf_desc} confidence ({confidence:.2f}).{location_text}"
+        # Confidence description
+        if confidence > 0.9:
+            conf_desc = "high"
+        elif confidence > 0.7:
+            conf_desc = "moderate"
+        else:
+            conf_desc = "low"
+        
+        explanation = (
+            f"A fracture pattern consistent with **{prediction}** is detected with {conf_desc} "
+            f"confidence ({confidence:.2f}).{location_text}"
+        )
+        
+        # Add simpler visual cue description
+        if prediction in ["Transverse", "Oblique"]:
+             explanation += " This is based on a distinct linear focus."
+        
+        return explanation
+
+# Alias for backward compatibility
+ModelEnsembleAgent = EnsembleModule
+ExplainabilityAgent = ExplanationModule
 
 class EducationalAgent:
     def __init__(self, doctor_name: str = "Your Doctor"):
@@ -785,7 +861,12 @@ def load_models_startup():
                 print(f"Failed to load {filename}: {e}")
 
     if models:
-        ensemble_agent = ModelEnsembleAgent(models, CLASS_NAMES, device)
+        # Backend uses explicit args matching EnsembleModule
+        ensemble_agent = ModelEnsembleAgent(
+            class_names=CLASS_NAMES,
+            models=models,
+            device=device
+        )
 
 class ChatRequest(BaseModel):
     message: str

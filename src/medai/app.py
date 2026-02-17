@@ -732,312 +732,25 @@ def _swap_prediction_label(label: str) -> str:
     return label
 
 
-# ============================================================================
-# AGENT 1: DIAGNOSTIC AGENT
-# ============================================================================
+try:
+    from medai.modules.diagnosis_module import DiagnosticModule
+    from medai.modules.ensemble_module import EnsembleModule
+    from medai.modules.explanation_module import ExplanationModule
+except ImportError as e:
+    logger.warning(f"Failed to import modules: {e}")
+    # Fallback to local definitions or error out
+    pass
 
-class DiagnosticAgent:
-    """Runs inference on a single model to diagnose fractures."""
-    
-    def __init__(self, model, class_names: List[str], device, img_size: int = 224, conformal_threshold: float = None):
-        self.model = model
-        self.class_names = class_names
-        self.device = device
-        self.transforms = get_transforms(img_size)
-        self.conformal_threshold = conformal_threshold
-    
-    @torch.no_grad()
-    def diagnose(self, image: Image.Image) -> Dict[str, Any]:
-        """Runs diagnosis on a PIL image."""
-        if self.model is None:
-            return {"error": "Model not loaded"}
-        
-        input_tensor = self.transforms(image).unsqueeze(0).to(self.device)
-        outputs = self.model(input_tensor)
-        probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
-        
-        pred_idx = int(np.argmax(probs))
-        confidence = float(probs[pred_idx])
-        predicted_class_raw = self.class_names[pred_idx]
-        predicted_class = _swap_prediction_label(predicted_class_raw)
-        
-        # Prepare probabilities dictionary with swapped labels
-        all_probs_dict = {}
-        for i in range(len(probs)):
-            class_name = self.class_names[i]
-            swapped_name = _swap_prediction_label(class_name)
-            all_probs_dict[swapped_name] = float(probs[i])
-        
-        result = {
-            "predicted_class": predicted_class,
-            "confidence_score": confidence,
-            "fracture_detected": predicted_class != "Healthy",
-            "all_probabilities": all_probs_dict,
-            "severity_type": predicted_class,
-            "is_label_swapped": True
-        }
-
-        if self.conformal_threshold is not None:
-            try:
-                conformal_set = predict_conformal_set(probs, self.conformal_threshold, self.class_names)
-                result["conformal_set"] = conformal_set
-                result["conformal_threshold"] = float(self.conformal_threshold)
-            except Exception:
-                result["conformal_set_error"] = "failed to compute conformal set"
-
-        return result
-
-
-# ============================================================================
-# AGENT 2: MODEL ENSEMBLE AGENT (Cross-Validation)
-# ============================================================================
-
-class ModelEnsembleAgent:
-    """Runs inference across multiple models and combines predictions."""
-    
-    # Classes where hypercolumn models should get more weight
-    HYPERCOLUMN_PRIORITY_CLASSES = {"Oblique", "Oblique Displaced", "Transverse", "Transverse Displaced"}
-    # Weight for hypercolumn models when priority class is detected
-    # Tuned on validation set (see scripts/prepare_val_and_calibrate.py)
-    HYPERCOLUMN_WEIGHT = 1.0
-    # Weight for other models
-    DEFAULT_WEIGHT = 1.0
-    
-    def __init__(self, models: Dict[str, nn.Module], class_names: List[str], device, img_size: int = 224, conformal_threshold: float = None):
-        self.models = models
-        self.class_names = class_names
-        self.device = device
-        self.transforms = get_transforms(img_size)
-        self.conformal_threshold = conformal_threshold
-    
-    def _is_hypercolumn_model(self, model_name: str) -> bool:
-        """Check if a model is a hypercolumn/column model."""
-        return "hypercolumn" in model_name.lower() or "cbam" in model_name.lower()
-    
-    def _get_weighted_average(self, all_probs: List[np.ndarray], model_names: List[str], 
-                               use_hypercolumn_priority: bool) -> np.ndarray:
-        """
-        Compute weighted average of probabilities.
-        
-        If use_hypercolumn_priority is True, hypercolumn models get more weight.
-        Otherwise, equal weights are used for all models.
-        """
-        weights = []
-        for name in model_names:
-            if use_hypercolumn_priority and self._is_hypercolumn_model(name):
-                weights.append(self.HYPERCOLUMN_WEIGHT)
-            else:
-                weights.append(self.DEFAULT_WEIGHT)
-        
-        # Normalize weights
-        weights = np.array(weights)
-        weights = weights / weights.sum()
-        
-        # Compute weighted average
-        weighted_probs = np.zeros_like(all_probs[0])
-        for prob, weight in zip(all_probs, weights):
-            weighted_probs += prob * weight
-        
-        return weighted_probs
-
-    def _predict_with_stacker(self, all_probs: List[np.ndarray], model_names: List[str]):
-        """If a `stacker` is present on the instance, use it to predict class probabilities.
-
-        Expects `self.stacker` to be a sklearn-like estimator with `predict_proba` accepting features shaped (1, M*C).
-        """
-        if not hasattr(self, 'stacker') or self.stacker is None:
-            raise RuntimeError('No stacker available')
-        import numpy as np
-        probs = np.stack(all_probs, axis=0)  # (M, C)
-        feat = probs.reshape(1, -1)
-        proba = self.stacker.predict_proba(feat)[0]
-        return proba
-    
-    @torch.no_grad()
-    def run_ensemble(self, image: Image.Image, use_stacking: bool = False) -> Dict[str, Any]:
-        """Runs ensemble inference on a PIL image."""
-        if not self.models:
-            return {"error": "No models loaded"}
-        
-        input_tensor = self.transforms(image).unsqueeze(0).to(self.device)
-        
-        all_probs = []
-        model_names = []
-        individual_predictions = {}
-        
-        for name, model in self.models.items():
-            outputs = model(input_tensor)
-            probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
-            all_probs.append(probs)
-            model_names.append(name)
-            
-            pred_idx = np.argmax(probs)
-            pred_class_raw = self.class_names[pred_idx]
-            
-            individual_predictions[name] = {
-                "class": _swap_prediction_label(pred_class_raw),
-                "confidence": float(probs[pred_idx])
-            }
-        
-        # First pass: compute equal-weighted average to determine likely class
-        equal_avg_probs = np.mean(all_probs, axis=0)
-        preliminary_idx = np.argmax(equal_avg_probs)
-        preliminary_class = self.class_names[preliminary_idx]
-        # Note: preliminary_class is used for weighting heuristic, we should probably keep it consistent
-        # For HYPERCOLUMN_PRIORITY_CLASSES, both Transverse and Transverse Displaced are in it, so swap doesn't affect priority logic.
-        
-        # Check if preliminary class is one where hypercolumn models should have priority
-        use_hypercolumn_priority = preliminary_class in self.HYPERCOLUMN_PRIORITY_CLASSES
-        
-        # Second pass: compute final weighted average based on detected class
-        if use_stacking:
-            try:
-                avg_probs = self._predict_with_stacker(all_probs, model_names)
-            except Exception:
-                avg_probs = self._get_weighted_average(all_probs, model_names, use_hypercolumn_priority)
-        else:
-            avg_probs = self._get_weighted_average(all_probs, model_names, use_hypercolumn_priority)
-            
-        ensemble_idx = np.argmax(avg_probs)
-        ensemble_class_raw = self.class_names[ensemble_idx]
-        ensemble_class = _swap_prediction_label(ensemble_class_raw)
-        ensemble_confidence = float(avg_probs[ensemble_idx])
-        
-        # Prepare all probabilities with swapped labels
-        all_probs_dict = {}
-        for i in range(len(avg_probs)):
-            class_name = self.class_names[i]
-            swapped_name = _swap_prediction_label(class_name)
-            all_probs_dict[swapped_name] = float(avg_probs[i])
-        
-        result = {
-            "ensemble_prediction": ensemble_class,
-            "ensemble_confidence": ensemble_confidence,
-            "individual_predictions": individual_predictions,
-            "fracture_detected": ensemble_class != "Healthy",
-            "all_probabilities": all_probs_dict,
-            "weighted_voting": use_hypercolumn_priority,
-            "weighting_reason": f"Hypercolumn models prioritized for {preliminary_class}" if use_hypercolumn_priority else "Equal weights for all models",
-            "is_label_swapped": True
-        }
-
-        if self.conformal_threshold is not None:
-            try:
-                conformal_set = predict_conformal_set(avg_probs, self.conformal_threshold, self.class_names)
-                result["conformal_set"] = conformal_set
-                result["conformal_threshold"] = float(self.conformal_threshold)
-            except Exception:
-                result["conformal_set_error"] = "failed to compute conformal set"
-
-        return result
-
-
-# ============================================================================
-# AGENT 3: EXPLAINABILITY AGENT (Grad-CAM)
-# ============================================================================
-
-class ExplainabilityAgent:
-    """Generates Grad-CAM visualizations and textual explanations."""
-    
-    def __init__(self, model, class_names: List[str], device, body_part: str = "bone"):
-        self.model = model
-        self.class_names = class_names
-        self.device = device
-        self.body_part = body_part
-        self.transforms = get_transforms()
-        self.target_layer = self._get_target_layer()
-    
-    def _get_target_layer(self):
-        """Gets the appropriate target layer for Grad-CAM."""
-        if self.model is None:
-            return None
-        
-        # Try common layer names
-        for attr in ['layer4', 'features', 'stages', 'blocks']:
-            if hasattr(self.model, attr):
-                layer = getattr(self.model, attr)
-                if isinstance(layer, nn.Sequential) and len(layer) > 0:
-                    return [layer[-1]]
-                return [layer]
-        
-        # Fallback: get last conv layer
-        layers = []
-        for module in self.model.modules():
-            if isinstance(module, nn.Conv2d):
-                layers.append(module)
-        return [layers[-1]] if layers else None
-    
-    def generate_gradcam(self, image: Image.Image, target_class: int = None) -> Optional[np.ndarray]:
-        """Generates Grad-CAM heatmap."""
-        if not GRADCAM_AVAILABLE or self.model is None or self.target_layer is None:
-            return None
-        
-        try:
-            input_tensor = self.transforms(image).unsqueeze(0).to(self.device)
-            
-            with GradCAM(model=self.model, target_layers=self.target_layer) as cam:
-                targets = [ClassifierOutputTarget(target_class)] if target_class is not None else None
-                grayscale_cam = cam(input_tensor=input_tensor, targets=targets)
-                return grayscale_cam[0]
-        except Exception as e:
-            st.warning(f"Grad-CAM generation failed: {e}")
-            return None
-    
-    def visualize_gradcam(self, image: Image.Image, cam_array: np.ndarray) -> Image.Image:
-        """Overlays Grad-CAM on the original image."""
-        if cam_array is None:
-            return image
-        
-        # Normalize image to 0-1
-        img_array = np.array(image.resize((224, 224))) / 255.0
-        
-        # Create heatmap overlay
-        visualization = show_cam_on_image(img_array.astype(np.float32), cam_array, use_rgb=True)
-        return Image.fromarray(visualization)
-    
-    def generate_explanation(self, diagnosis_result: Dict[str, Any], cam_array: np.ndarray = None) -> str:
-        """Generates textual explanation based on diagnosis and Grad-CAM."""
-        predicted_class = diagnosis_result.get("predicted_class", diagnosis_result.get("ensemble_prediction", "Unknown"))
-        confidence = diagnosis_result.get("confidence_score", diagnosis_result.get("ensemble_confidence", 0.0))
-        
-        if predicted_class == "Healthy":
-            if confidence > 0.90:
-                return f"The {self.body_part} appears **healthy** with high confidence ({confidence:.2f}). No fracture pattern was detected."
-            else:
-                return f"The {self.body_part} is likely **healthy** ({confidence:.2f}), though some areas warrant closer examination."
-        
-        # Analyze heatmap if available
-        location_text = ""
-        if cam_array is not None:
-            norm_cam = cam_array / (cam_array.max() + 1e-8)
-            y_indices, x_indices = np.where(norm_cam > 0.5)
-            if len(y_indices) > 0 and len(x_indices) > 0:
-                avg_x = np.mean(x_indices) / cam_array.shape[1]
-                avg_y = np.mean(y_indices) / cam_array.shape[0]
-                
-                x_loc = "right side" if avg_x > 0.65 else ("left side" if avg_x < 0.35 else "center")
-                y_loc = "distal end" if avg_y > 0.65 else ("proximal end" if avg_y < 0.35 else "middle region")
-                location_text = f" The model's attention is focused on the **{y_loc}** of the **{x_loc}**."
-        
-        # Confidence description
-        if confidence > 0.9:
-            conf_desc = "high"
-        elif confidence > 0.7:
-            conf_desc = "moderate"
-        else:
-            conf_desc = "low"
-        
-        explanation = (
-            f"A fracture pattern consistent with **{predicted_class}** is detected with {conf_desc} "
-            f"confidence ({confidence:.2f}).{location_text}"
-        )
-        
-        return explanation
+# Alias for compatibility
+DiagnosticAgent = DiagnosticModule
+ModelEnsembleAgent = EnsembleModule
+ExplainabilityAgent = ExplanationModule
 
 
 # ============================================================================
 # AGENT 4: EDUCATIONAL AGENT
 # ============================================================================
+
 
 class EducationalAgent:
     """Translates technical diagnoses into patient-friendly explanations."""
@@ -1660,37 +1373,45 @@ def render_diagnosis_results():
                 st.error(result["error"])
     
     # Probability distribution
-    if st.session_state.ensemble_result and "all_probabilities" in st.session_state.ensemble_result:
-        st.markdown("**Class Probabilities**")
-        probs = st.session_state.ensemble_result["all_probabilities"]
+    if st.session_state.ensemble_result:
+        probs = None
+        # Prefer dictionary format
+        if "all_probabilities_dict" in st.session_state.ensemble_result:
+             probs = st.session_state.ensemble_result["all_probabilities_dict"]
+        elif "all_probabilities" in st.session_state.ensemble_result:
+             probs = st.session_state.ensemble_result["all_probabilities"]
         
-        fig, ax = plt.subplots(figsize=(10, 4))
-        classes = list(probs.keys())
-        values = list(probs.values())
-        colors = ['#2ecc71' if c == 'Healthy' else '#e74c3c' for c in classes]
-        
-        bars = ax.barh(classes, values, color=colors)
-        ax.set_xlabel('Probability')
-        ax.set_xlim(0, 1)
-        
-        for bar, val in zip(bars, values):
-            ax.text(val + 0.02, bar.get_y() + bar.get_height()/2, f'{val:.2%}', va='center')
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-        # show margin and uncertainty
-        try:
-            vals = list(probs.values())
-            sorted_idxs = sorted(range(len(vals)), key=lambda k: vals[k], reverse=True)
-            top1 = vals[sorted_idxs[0]]
-            top2 = vals[sorted_idxs[1]] if len(vals) > 1 else 0.0
-            margin = top1 - top2
-            st.markdown(f"**Top-1 vs Top-2 margin:** {margin:.2%}")
-            if margin < 0.15:
-                st.warning("Low margin between top classes — result may be ambiguous. See conformal set for alternatives.")
-        except Exception:
-            pass
+        # Ensure probs is a dict before plotting
+        if probs and isinstance(probs, dict):
+            st.markdown("**Class Probabilities**")
+            
+            fig, ax = plt.subplots(figsize=(10, 4))
+            classes = list(probs.keys())
+            values = list(probs.values())
+            colors = ['#2ecc71' if c == 'Healthy' else '#e74c3c' for c in classes]
+            
+            bars = ax.barh(classes, values, color=colors)
+            ax.set_xlabel('Probability')
+            ax.set_xlim(0, 1)
+            
+            for bar, val in zip(bars, values):
+                ax.text(val + 0.02, bar.get_y() + bar.get_height()/2, f'{val:.2%}', va='center')
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close()
+            # show margin and uncertainty
+            try:
+                vals = list(probs.values())
+                sorted_idxs = sorted(range(len(vals)), key=lambda k: vals[k], reverse=True)
+                top1 = vals[sorted_idxs[0]]
+                top2 = vals[sorted_idxs[1]] if len(vals) > 1 else 0.0
+                margin = top1 - top2
+                st.markdown(f"**Top-1 vs Top-2 margin:** {margin:.2%}")
+                if margin < 0.15:
+                    st.warning("Low margin between top classes — result may be ambiguous. See conformal set for alternatives.")
+            except Exception:
+                pass
 
 
 def render_critic_review():
@@ -1872,7 +1593,12 @@ def run_analysis(image: Image.Image, config: dict, device):
     
     # Agent 1: Diagnostic Agent
     with st.spinner("Running primary diagnosis..."):
-        diagnostic_agent = DiagnosticAgent(primary_model, CLASS_NAMES, device, conformal_threshold=conformal_threshold)
+        diagnostic_agent = DiagnosticAgent(
+            class_names=CLASS_NAMES, 
+            model=primary_model, 
+            device=device, 
+            conformal_threshold=conformal_threshold
+        )
         st.session_state.diagnosis_result = diagnostic_agent.diagnose(image)
     
     # Agent 2: Ensemble Agent
@@ -1883,12 +1609,22 @@ def run_analysis(image: Image.Image, config: dict, device):
                 import joblib
                 stacker = joblib.load(config.get('stacker_path'))
                 # create ensemble agent with stacking mode: pass stacker as additional attribute
-                ensemble_agent = ModelEnsembleAgent(models, CLASS_NAMES, device, conformal_threshold=conformal_threshold)
+                ensemble_agent = ModelEnsembleAgent(
+                    class_names=CLASS_NAMES,
+                    models=models,
+                    device=device,
+                    conformal_threshold=conformal_threshold
+                )
                 # monkey-patch stacker into agent for use
                 ensemble_agent.stacker = stacker
                 st.session_state.ensemble_result = ensemble_agent.run_ensemble(image, use_stacking=True)
             else:
-                ensemble_agent = ModelEnsembleAgent(models, CLASS_NAMES, device, conformal_threshold=conformal_threshold)
+                ensemble_agent = ModelEnsembleAgent(
+                    class_names=CLASS_NAMES,
+                    models=models,
+                    device=device,
+                    conformal_threshold=conformal_threshold
+                )
                 st.session_state.ensemble_result = ensemble_agent.run_ensemble(image)
     else:
         # Use single model result as ensemble result
@@ -1900,7 +1636,8 @@ def run_analysis(image: Image.Image, config: dict, device):
                 "confidence": st.session_state.diagnosis_result["confidence_score"]
             }},
             "fracture_detected": st.session_state.diagnosis_result["fracture_detected"],
-            "all_probabilities": st.session_state.diagnosis_result["all_probabilities"]
+            "all_probabilities": st.session_state.diagnosis_result["all_probabilities"],
+            "all_probabilities_dict": st.session_state.diagnosis_result.get("all_probabilities_dict")
         }
         # propagate conformal set from single-model diagnosis if present
         if "conformal_set" in st.session_state.diagnosis_result:

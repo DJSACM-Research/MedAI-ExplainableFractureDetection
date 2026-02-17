@@ -917,8 +917,9 @@ export default function DiagnosePage() {
                   >
                     <CardHeader>
                       <CardTitle className="flex items-center gap-2 text-lg">
-                        <span className="text-2xl">🤖</span> AI Explanation
-                        (Powered by Gemini)
+                        <span className="text-2xl">
+                          Detailed Technical Explanation
+                        </span>{" "}
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
