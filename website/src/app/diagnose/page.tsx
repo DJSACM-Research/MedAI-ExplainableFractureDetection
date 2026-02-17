@@ -906,6 +906,35 @@ export default function DiagnosePage() {
                   )}
                 </div>
 
+                {/* Gemini AI Explanation */}
+                {result.knowledge_base.gemini_explanation && (
+                  <Card
+                    className={`border ${
+                      medicalLight
+                        ? "bg-indigo-50 border-indigo-200"
+                        : "bg-indigo-950/20 border-indigo-500/30"
+                    }`}
+                  >
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-lg">
+                        <span className="text-2xl">🤖</span> AI Explanation
+                        (Powered by Gemini)
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div
+                        className={`prose max-w-none text-sm ${
+                          medicalLight ? "text-indigo-900" : "text-indigo-100"
+                        }`}
+                      >
+                        <ReactMarkdown>
+                          {result.knowledge_base.gemini_explanation}
+                        </ReactMarkdown>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
                 {/* Educational Content & Chat */}
                 <div className="grid md:grid-cols-2 gap-8">
                   <Card className="h-full">

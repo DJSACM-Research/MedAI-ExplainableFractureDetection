@@ -90,6 +90,12 @@ except ImportError:
     REQUESTS_AVAILABLE = False
 
 try:
+    import httpx
+    HTTPX_AVAILABLE = True
+except ImportError:
+    HTTPX_AVAILABLE = False
+
+try:
     import chromadb
     from chromadb.utils import embedding_functions
     CHROMADB_AVAILABLE = True
@@ -333,106 +339,288 @@ CHROMA_DB_PATH = "./chroma_db"
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 # ============================================================================
+# KNOWLEDGE AGENT CONFIGURATION
+# ============================================================================
+
+DIAG_COLLECTION_NAME = "medical_diagnoses"
+SOURCE_COLLECTION_NAME = "medai_sources"
+TOP_K_RESULTS = 3
+
+# Gemini API Config
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+
+# ============================================================================
 # MEDICAL KNOWLEDGE BASE
 # ============================================================================
 
-MEDICAL_KNOWLEDGE_BASE = {
+MEDICAL_KNOWLEDGE_BASE: Dict[str, Dict[str, Any]] = {
     "Comminuted": {
-        "definition": "A fracture where the bone is shattered into three or more fragments.",
-        "icd_code": "S42.35",
-        "severity": "Severe",
+        "definition": "A fracture where the bone is broken into three or more fragments.",
+        "icd_code": "S52.5",
+        "severity": "High",
         "treatment_guidelines": [
-            "Immediate orthopedic consultation required",
-            "Surgical intervention often necessary (ORIF)",
-            "Extended immobilization period (8-12 weeks)",
-            "Physical therapy post-healing"
+            "Usually requires surgical intervention (open reduction internal fixation / ORIF).",
+            "Long immobilization (8-12 weeks).",
+            "Requires structured physical therapy after immobilization."
         ],
-        "prognosis": "Recovery typically 3-6 months with proper surgical management."
-    },
-    "Greenstick": {
-        "definition": "An incomplete fracture where the bone bends and cracks but does not break completely.",
-        "icd_code": "S42.31",
-        "severity": "Mild to Moderate",
-        "treatment_guidelines": [
-            "Often treated with casting or splinting",
-            "Immobilization for 4-6 weeks",
-            "Common in children due to bone flexibility",
-            "Follow-up X-rays to monitor healing"
-        ],
-        "prognosis": "Excellent prognosis, typically heals within 4-8 weeks."
-    },
-    "Healthy": {
-        "definition": "No fracture detected. Bone structure appears normal.",
-        "icd_code": "Z03.89",
-        "severity": "None",
-        "treatment_guidelines": [
-            "No treatment required for fracture",
-            "Address any other symptoms if present",
-            "Follow up if pain persists"
-        ],
-        "prognosis": "N/A - No fracture present."
-    },
-    "Oblique": {
-        "definition": "A fracture with an angled break across the bone shaft.",
-        "icd_code": "S42.33",
-        "severity": "Moderate",
-        "treatment_guidelines": [
-            "May require reduction if displaced",
-            "Casting for 6-8 weeks typical",
-            "Monitor for displacement during healing",
-            "Physical therapy may be beneficial"
-        ],
-        "prognosis": "Good prognosis with proper alignment, 6-10 weeks healing."
+        "prognosis_notes": "Risk of non-union and malunion is higher. Full recovery may take 6+ months."
     },
     "Oblique Displaced": {
-        "definition": "An angled fracture where bone fragments have shifted from normal alignment.",
-        "icd_code": "S42.33",
-        "severity": "Moderate to Severe",
+        "definition": "A diagonal break where the bone fragments are separated and misaligned.",
+        "icd_code": "S52.9",
+        "severity": "Medium-High",
         "treatment_guidelines": [
-            "Closed or open reduction typically required",
-            "May need internal fixation (pins, plates)",
-            "Extended immobilization (8-12 weeks)",
-            "Regular imaging to monitor alignment"
+            "Requires reduction (closed or open) to restore alignment.",
+            "Often treated with casting; unstable fractures may need internal fixation."
         ],
-        "prognosis": "Good with surgical correction, 8-12 weeks healing."
+        "prognosis_notes": "Good prognosis if reduced early and adequately stabilized."
     },
-    "Spiral": {
-        "definition": "A fracture caused by a twisting force, creating a helical break pattern.",
-        "icd_code": "S42.34",
-        "severity": "Moderate to Severe",
+    "Healthy": {
+        "definition": "No radiographic evidence of fracture.",
+        "icd_code": "Z00.0",
+        "severity": "Low",
         "treatment_guidelines": [
-            "Often requires surgical stabilization",
-            "Evaluate for associated soft tissue injury",
-            "Cast or brace after stabilization",
-            "Rotational alignment must be maintained"
+            "No specific fracture treatment required.",
+            "Advise routine follow-up and monitoring of symptoms."
         ],
-        "prognosis": "Good with proper stabilization, 8-12 weeks healing."
+        "prognosis_notes": "Normal bone health based on the available imaging."
     },
     "Transverse": {
-        "definition": "A horizontal fracture perpendicular to the long axis of the bone.",
-        "icd_code": "S42.32",
-        "severity": "Moderate",
+        "definition": "A fracture line that is approximately perpendicular to the long axis of the bone.",
+        "icd_code": "S52.0",
+        "severity": "Medium",
         "treatment_guidelines": [
-            "Often stable and amenable to casting",
-            "Reduction if significantly displaced",
-            "Immobilization for 6-8 weeks",
-            "Monitor for angulation"
+            "Closed reduction and casting are common for stable fractures.",
+            "Unstable patterns may require pins, screws, or plates."
         ],
-        "prognosis": "Good prognosis, typically 6-8 weeks healing."
+        "prognosis_notes": "Generally heals well with proper immobilization and alignment."
     },
-    "Transverse Displaced": {
-        "definition": "A horizontal fracture with bone fragments out of alignment.",
-        "icd_code": "S42.32",
-        "severity": "Moderate to Severe",
+    "Spiral": {
+        "definition": "A fracture caused by a twisting force, with a spiral or helical fracture line.",
+        "icd_code": "S52.7",
+        "severity": "Medium-High",
         "treatment_guidelines": [
-            "Reduction required (closed or open)",
-            "Internal fixation often recommended",
-            "Extended monitoring for healing",
-            "Physical therapy post-healing"
+            "Often requires surgical fixation due to rotational instability.",
+            "Longer recovery because of associated soft-tissue injury risk."
         ],
-        "prognosis": "Good with proper reduction, 8-10 weeks healing."
+        "prognosis_notes": "Healing can be slow; higher risk of displacement during healing."
+    },
+    "Greenstick": {
+        "definition": "An incomplete fracture where one cortex is broken and the other is bent, typically in children.",
+        "icd_code": "S52.8",
+        "severity": "Low",
+        "treatment_guidelines": [
+            "Usually treated with simple casting or splinting.",
+            "Follow-up radiographs to ensure remodeling in growing bone."
+        ],
+        "prognosis_notes": "Excellent prognosis; children typically heal rapidly with complete remodeling."
+    },
+    "Impacted": {
+        "definition": "A fracture where the ends of the bone are driven into each other, shortening the bone.",
+        "icd_code": "S52.2",
+        "severity": "Medium",
+        "treatment_guidelines": [
+            "May be stable enough for casting or functional bracing.",
+            "Monitor for limb shortening or joint incongruity."
+        ],
+        "prognosis_notes": "Generally good stability and satisfactory healing if alignment is acceptable."
+    },
+    "Pathologic": {
+        "definition": "A fracture occurring in bone weakened by disease (e.g., osteoporosis, tumor, metastasis).",
+        "icd_code": "M84.4",
+        "severity": "Often High due to the underlying pathology",
+        "treatment_guidelines": [
+            "Treat both the fracture and the underlying disease.",
+            "May require specialized surgical fixation and oncology input."
+        ],
+        "prognosis_notes": "Highly dependent on the underlying condition and systemic disease control."
     }
 }
+
+
+# --------------------------------------------------------------------------
+# RAG Knowledge Base: MedAI Domain + Technical Sources
+# (Condensed from your table into documents that we can embed)
+# --------------------------------------------------------------------------
+RAG_SOURCE_DOCS: List[Dict[str, Any]] = [
+    # ----------------- Domain Knowledge (Clinical & Radiology) -----------------
+    {
+        "id": "ao_ota_fracture_classification",
+        "category": "Fracture Classification & Terminology",
+        "title": "AO/OTA Fracture Classification System",
+        "content": (
+            "The AO/OTA fracture classification system is the international standard for "
+            "describing fractures using bone, segment and morphology codes (e.g., 31-A2). "
+            "It provides precise terminology for fracture location and pattern, enabling "
+            "consistent reporting and communication between clinicians. In MedAI, this "
+            "serves as the core diagnostic explainer that maps model outputs to standard "
+            "orthopedic language when describing why a fracture is classified a certain way."
+        ),
+        "use_case": "Explain exact fracture code and terminology for model-predicted fracture classes."
+    },
+    {
+        "id": "salter_harris_classification",
+        "category": "Fracture Classification & Terminology",
+        "title": "Salter-Harris Classification for Pediatric Physeal Injuries",
+        "content": (
+            "The Salter-Harris classification describes fractures involving the epiphyseal "
+            "growth plate in children (Types I–V). It guides prognosis and treatment decisions "
+            "in pediatric fractures. In MedAI, this knowledge is used when the pipeline detects "
+            "a probable pediatric case, allowing LLaMA 3 to give age-appropriate explanations "
+            "and warn about growth plate involvement."
+        ),
+        "use_case": "Provide pediatric-specific explanations when the patient is a child or adolescent."
+    },
+    {
+        "id": "aaos_orthoinfo",
+        "category": "Clinical Context & Management",
+        "title": "OrthoInfo (AAOS) Patient-Friendly Fracture Articles",
+        "content": (
+            "OrthoInfo from the American Academy of Orthopaedic Surgeons (AAOS) provides "
+            "patient-friendly explanations for fractures such as distal radius, tibial shaft, "
+            "and ankle fractures. The content covers symptoms, mechanism of injury, typical "
+            "treatment pathways, recovery timelines and self-care advice. In MedAI, these texts "
+            "inform the patient-facing interface so that explanations are understandable and "
+            "aligned with standard patient education material."
+        ),
+        "use_case": "Generate simple, patient-facing explanations about symptoms, treatment and recovery."
+    },
+    {
+        "id": "rockwood_green_fractures_textbook",
+        "category": "Clinical Context & Management",
+        "title": "Rockwood and Green's Fractures in Adults and Children",
+        "content": (
+            "Rockwood and Green's is a standard orthopedic reference textbook that describes "
+            "diagnosis, classification, indications for surgery and complications for fractures "
+            "throughout the body. In MedAI, key diagnostic and management sections are used as "
+            "high-authority clinical grounding to differentiate fracture types and to reason "
+            "about complications such as non-union, malunion, and neurovascular injury."
+        ),
+        "use_case": "Deep clinical validation and high-authority grounding for clinician-level questions."
+    },
+    {
+        "id": "radiopaedia_fracture_entries",
+        "category": "Radiology & Interpretation",
+        "title": "Radiopaedia Fracture Imaging Patterns",
+        "content": (
+            "Radiopaedia.org hosts detailed fracture entries with example radiographs and CT scans, "
+            "describing typical imaging appearances, variants and pitfalls. It explains features such "
+            "as butterfly fragments, wedge patterns, cortical step-offs and subtle trabecular changes. "
+            "In MedAI, this material is used to contextualize Grad-CAM heatmaps and explain which visual "
+            "features the vision transformers are expected to focus on for each fracture pattern."
+        ),
+        "use_case": "Explain Grad-CAM regions and image features underlying the model's decision."
+    },
+    {
+        "id": "acr_appropriateness_criteria",
+        "category": "Radiology & Interpretation",
+        "title": "ACR Appropriateness Criteria for Musculoskeletal Imaging",
+        "content": (
+            "The American College of Radiology (ACR) Appropriateness Criteria provide evidence-based "
+            "recommendations on when to order additional imaging such as CT, MRI or ultrasound. For "
+            "fractures, they describe indications for follow-up imaging in occult injury, complex "
+            "articular involvement and postoperative assessment. MedAI uses these guidelines to suggest "
+            "standard next-step imaging options in an informational (non-prescriptive) manner."
+        ),
+        "use_case": "Inform non-binding recommendations about when additional imaging might be considered."
+    },
+    {
+        "id": "ai_ethics_regulation",
+        "category": "Ethical & Regulatory",
+        "title": "FDA AI/ML Guidelines and Health Informatics Ethics (HIMSS/AMIA)",
+        "content": (
+            "Regulatory and ethics documents from bodies such as the FDA, HIMSS and AMIA emphasize "
+            "transparency, bias mitigation, clinical oversight and safety for AI-based medical devices. "
+            "Key themes include not replacing clinician judgment, providing understandable explanations, "
+            "and clearly stating limitations. MedAI uses this knowledge to ensure that the LLaMA 3 "
+            "interface gives appropriate disclaimers and avoids specific patient-tailored medical advice."
+        ),
+        "use_case": "Generate safety disclaimers and keep explanations informational rather than prescriptive."
+    },
+
+    # ----------------- Technical & Explainability Knowledge -----------------
+    {
+        "id": "swin_transformer_paper",
+        "category": "Model Architecture & Vision Transformers",
+        "title": "Swin Transformer Architecture",
+        "content": (
+            "The Swin Transformer is a hierarchical vision transformer that uses shifted windows to "
+            "efficiently model local and global image context. It processes images as non-overlapping "
+            "patches, applies self-attention within windows and gradually builds multi-scale feature maps. "
+            "In MedAI, Swin-based models serve as core vision backbones, explaining how X-ray images are "
+            "tokenized and how local fracture cues and global alignment are captured."
+        ),
+        "use_case": "Answer technical questions about why Swin was chosen and how it processes X-ray patches."
+    },
+    {
+        "id": "convnext_paper",
+        "category": "Model Architecture & Vision Transformers",
+        "title": "ConvNeXt: Modernized CNN Architecture",
+        "content": (
+            "ConvNeXt is a convolutional neural network architecture that modernizes ResNet-style designs "
+            "to achieve transformer-level performance while retaining convolutional inductive biases. "
+            "It uses large kernels, depthwise convolutions and LayerNorm to improve accuracy and efficiency. "
+            "In MedAI, ConvNeXt complements Swin as an alternative backbone in the ensemble, providing "
+            "architectural diversity and robustness."
+        ),
+        "use_case": "Explain why a CNN-style backbone is included and how it differs from Swin."
+    },
+    {
+        "id": "grad_cam_paper",
+        "category": "Explainable AI",
+        "title": "Grad-CAM: Visual Explanations from Deep Networks",
+        "content": (
+            "Grad-CAM (Gradient-weighted Class Activation Mapping) produces heatmaps by backpropagating "
+            "gradients from a target class to convolutional feature maps, highlighting spatial regions that "
+            "contribute most to the prediction. In MedAI, Grad-CAM is applied to vision transformer and "
+            "ConvNeXt feature maps to produce clinically interpretable overlays on X-ray images, explaining "
+            "which bone regions influenced the predicted fracture class. Limitations include coarse "
+            "localization and dependence on the chosen layer."
+        ),
+        "use_case": "Explain how the heatmaps are generated and discuss strengths and limitations of Grad-CAM."
+    },
+    {
+        "id": "ensemble_learning_review",
+        "category": "Explainable AI",
+        "title": "Ensemble Learning and Cross-Validation in MedAI",
+        "content": (
+            "Ensemble learning combines multiple models to improve robustness and generalization. Common "
+            "strategies include majority voting, averaging of probabilities and stacking. Cross-validation "
+            "quantifies performance stability across folds. In MedAI, five specialized diagnostic agents "
+            "and cross-validated models are ensembled to achieve macro-F1 > 0.92, while still allowing "
+            "interpretation at the level of individual agent predictions and Grad-CAM maps."
+        ),
+        "use_case": "Justify the ensemble agent design and answer questions about why multiple models are used."
+    },
+    {
+        "id": "llama3_technical_report",
+        "category": "Multi-Agent & RAG/LLM",
+        "title": "LLaMA 3 Capabilities and Constraints",
+        "content": (
+            "LLaMA 3 is a large language model designed for instruction following and multi-turn dialogue. "
+            "It is powerful at generating natural language explanations but may hallucinate if not grounded "
+            "in external knowledge. In MedAI, LLaMA 3 is used strictly as a controlled natural language "
+            "interface, grounded via retrieval-augmented generation (RAG) over curated medical and technical "
+            "sources. Prompts emphasize not giving direct medical advice and staying within retrieved context."
+        ),
+        "use_case": "Explain how the language agent works, its limitations, and why RAG is necessary."
+    },
+    {
+        "id": "rag_and_multi_agent_frameworks",
+        "category": "Multi-Agent & RAG/LLM",
+        "title": "RAG and Multi-Agent Framework Concepts",
+        "content": (
+            "RAG (retrieval-augmented generation) systems combine vector search over knowledge bases with "
+            "LLM generation, passing retrieved documents as context to reduce hallucinations. Multi-agent "
+            "frameworks such as LangChain or CrewAI decompose complex tasks into specialized agents for "
+            "data retrieval, reasoning, explanation and tool use. MedAI adopts a multi-agent architecture "
+            "with dedicated diagnostic, cross-validation, explanation, patient-facing and knowledge agents, "
+            "each with clearly defined responsibilities."
+        ),
+        "use_case": "Describe the overall MedAI multi-agent architecture and how RAG fits into it."
+    }
+]
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -916,78 +1104,291 @@ class EducationalAgent:
 # ============================================================================
 
 class KnowledgeAgent:
-    """Provides structured medical knowledge and RAG capabilities."""
-    
-    def __init__(self):
-        self.knowledge_base = MEDICAL_KNOWLEDGE_BASE
-        self.chroma_client = None
-        self.collection = None
-        
-        if CHROMADB_AVAILABLE:
-            try:
-                self.chroma_client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-                self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                    model_name=EMBEDDING_MODEL_NAME
-                )
-                self._setup_collection()
-            except Exception as e:
-                st.warning(f"ChromaDB initialization failed: {e}")
-    
-    def _setup_collection(self):
-        """Sets up the ChromaDB collection."""
-        if self.chroma_client is None:
+    """
+    MedAI Knowledge Agent (Advanced):
+    - Builds and manages ChromaDB collections.
+    - Provides structured summaries for fracture diagnoses.
+    - Supports RAG over MedAI clinical/technical sources.
+    - Integrates LLaMA 3 for explanations (optional).
+    """
+
+    def __init__(self) -> None:
+        self.client = None
+        self.diag_collection = None
+        self.source_collection = None
+
+        if not CHROMADB_AVAILABLE:
+            st.warning("ChromaDB not installed. Knowledge Agent features disabled.")
             return
-        
-        self.collection = self.chroma_client.get_or_create_collection(
-            name="medical_diagnoses",
-            embedding_function=self.embedding_fn
+
+        try:
+            # Persistent Chroma client
+            self.client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+
+            # Shared embedding function
+            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=EMBEDDING_MODEL_NAME
+            )
+
+            # Collections
+            self.diag_collection = self._setup_diag_collection()
+            self.source_collection = self._setup_source_collection()
+        except Exception as e:
+            st.warning(f"Knowledge Agent initialization failed (ChromaDB error): {e}")
+            self.client = None
+
+    # ----------------- Collection Setup -----------------
+    def _setup_diag_collection(self):
+        # logger.info("Checking/creating diagnosis collection...")
+        collection = self.client.get_or_create_collection(
+            name=DIAG_COLLECTION_NAME,
+            embedding_function=self.embedding_fn,
         )
-        
-        diagnoses = list(self.knowledge_base.keys())
+
+        diagnoses = list(MEDICAL_KNOWLEDGE_BASE.keys())
         ids = [d.lower().replace(" ", "-") for d in diagnoses]
-        
-        if self.collection.count() != len(diagnoses):
+
+        # If empty or count mismatch, repopulate
+        if collection.count() != len(diagnoses):
             try:
-                self.chroma_client.delete_collection("medical_diagnoses")
+                self.client.delete_collection(DIAG_COLLECTION_NAME)
             except:
                 pass
-            self.collection = self.chroma_client.get_or_create_collection(
-                name="medical_diagnoses",
-                embedding_function=self.embedding_fn
+            collection = self.client.get_or_create_collection(
+                name=DIAG_COLLECTION_NAME,
+                embedding_function=self.embedding_fn,
             )
-            self.collection.add(documents=diagnoses, ids=ids)
-    
+            collection.add(documents=diagnoses, ids=ids)
+
+        return collection
+
+    def _setup_source_collection(self):
+        # logger.info("Checking/creating RAG source collection...")
+        collection = self.client.get_or_create_collection(
+            name=SOURCE_COLLECTION_NAME,
+            embedding_function=self.embedding_fn,
+        )
+
+        ids = [doc["id"] for doc in RAG_SOURCE_DOCS]
+        docs = [
+            f"Title: {doc['title']}\nCategory: {doc['category']}\n\n{doc['content']}\n\nUse case: {doc['use_case']}"
+            for doc in RAG_SOURCE_DOCS
+        ]
+        metadatas = [
+            {
+                "title": doc["title"],
+                "category": doc["category"],
+                "use_case": doc["use_case"],
+            }
+            for doc in RAG_SOURCE_DOCS
+        ]
+
+        if collection.count() != len(docs):
+            try:
+                self.client.delete_collection(SOURCE_COLLECTION_NAME)
+            except:
+                pass
+            collection = self.client.get_or_create_collection(
+                name=SOURCE_COLLECTION_NAME,
+                embedding_function=self.embedding_fn,
+            )
+            collection.add(ids=ids, documents=docs, metadatas=metadatas)
+
+        return collection
+
+    # ----------------- Structured Summary for Diagnoses -----------------
     def get_medical_summary(self, diagnosis: str, confidence: float) -> Dict[str, Any]:
-        """Gets structured medical information for a diagnosis."""
         diagnosis = diagnosis.strip()
         
-        # Try exact match first
-        if diagnosis in self.knowledge_base:
-            raw = self.knowledge_base[diagnosis]
-        else:
-            # Fall back to vector search if available
-            if self.collection and self.collection.count() > 0:
-                results = self.collection.query(query_texts=[diagnosis], n_results=1)
-                if results and results["documents"] and results["documents"][0]:
-                    retrieved = results["documents"][0][0]
-                    raw = self.knowledge_base.get(retrieved, {})
-                else:
-                    raw = {}
-            else:
-                raw = {}
-        
+        # Guard clause if DB not init
+        if not self.diag_collection:
+            # Fallback to direct dict lookup if DB missing but KB exists
+            if diagnosis in MEDICAL_KNOWLEDGE_BASE:
+                 raw = MEDICAL_KNOWLEDGE_BASE[diagnosis]
+                 return {
+                    "Diagnosis": diagnosis,
+                    "Ensemble_Confidence": f"{confidence:.2f}",
+                    "Type_Definition": raw.get("definition"),
+                    "ICD_Code": raw.get("icd_code", "N/A"),
+                    "Severity_Rating": raw.get("severity"),
+                    "Treatment_Guidelines": raw.get("treatment_guidelines"),
+                    "Long_Term_Prognosis": raw.get("prognosis_notes"),
+                }
+            return {"error": "Knowledge Agent not initialized properly."}
+
+        results = self.diag_collection.query(
+            query_texts=[diagnosis],
+            n_results=1,
+            include=["documents", "distances"],
+        )
+
+        if not results or not results["documents"] or not results["documents"][0]:
+            return {
+                "error": f"Vector search failed to find a relevant diagnosis for '{diagnosis}'."
+            }
+
+        retrieved_name = results["documents"][0][0]
+        raw = MEDICAL_KNOWLEDGE_BASE.get(retrieved_name)
+
         if not raw:
-            return {"error": f"No information found for '{diagnosis}'"}
-        
+            return {
+                "error": f"Retrieved diagnosis '{retrieved_name}' not present in knowledge base."
+            }
+
         return {
-            "Diagnosis": diagnosis,
+            "Diagnosis": retrieved_name,
             "Ensemble_Confidence": f"{confidence:.2f}",
-            "Type_Definition": raw.get("definition", "N/A"),
+            "Type_Definition": raw.get("definition"),
             "ICD_Code": raw.get("icd_code", "N/A"),
-            "Severity_Rating": raw.get("severity", "N/A"),
-            "Treatment_Guidelines": raw.get("treatment_guidelines", []),
-            "Long_Term_Prognosis": raw.get("prognosis", "N/A")
+            "Severity_Rating": raw.get("severity"),
+            "Treatment_Guidelines": raw.get("treatment_guidelines"),
+            "Long_Term_Prognosis": raw.get("prognosis_notes"),
         }
+
+    # ----------------- Helper for Critic Agent -----------------
+    def get_context_for_label(self, label: str) -> str:
+        """
+        Retrieves the definition context for the Critic Agent.
+        """
+        # We can reuse get_medical_summary with a dummy confidence
+        summary = self.get_medical_summary(label, 1.0)
+        if "error" in summary:
+            # Fallback based on knowledge base keys slightly matching
+            # Or generic definition
+            return f"Condition '{label}' regarding bone integrity."
+        
+        return summary.get("Type_Definition", "No definition found.")
+
+    # ----------------- RAG over MedAI Sources -----------------
+    def retrieve_sources(self, query: str, top_k: int = TOP_K_RESULTS) -> List[Dict[str, Any]]:
+        print(f"[DEBUG] Retrieving sources for query: {query}")
+        if not self.source_collection:
+            print("[DEBUG] source_collection is None/Empty.")
+            return []
+            
+        query = query.strip()
+        results = self.source_collection.query(
+            query_texts=[query],
+            n_results=top_k,
+            include=["documents", "metadatas"],
+        )
+        print(f"[DEBUG] Raw RAG results keys: {results.keys()}")
+
+        docs = results.get("documents", [[]])[0]
+        metas = results.get("metadatas", [[]])[0]
+
+        out: List[Dict[str, Any]] = []
+        for doc_text, meta in zip(docs, metas):
+            out.append(
+                {
+                    "title": meta.get("title"),
+                    "category": meta.get("category"),
+                    "use_case": meta.get("use_case"),
+                    "content": doc_text,
+                }
+            )
+        print(f"[DEBUG] Retrieved {len(out)} documents.")
+        return out
+
+    # ----------------- LLaMA 3 Integration (Optional) -----------------
+    def gemini_available(self) -> bool:
+        is_avail = bool(GEMINI_API_KEY)
+        print(f"[DEBUG] gemini_available check: {is_avail} (Key present: {'Yes' if GEMINI_API_KEY else 'No'})")
+        return is_avail
+
+    def generate_explanation_with_gemini(
+        self,
+        summary: Dict[str, Any],
+        retrieved_docs: List[Dict[str, Any]],
+        audience: str = "patient",
+    ) -> Optional[str]:
+        print("[DEBUG] Entering generate_explanation_with_gemini...")
+        if not self.gemini_available():
+            print("[DEBUG] optimize returning None because Gemini is not available.")
+            return None
+        
+        # Check if Requests is available
+        if 'requests' not in sys.modules and (not 'REQUESTS_AVAILABLE' in globals() or not REQUESTS_AVAILABLE):
+             logger.warning("Requests not installed or imported. Cannot call Gemini.")
+             print("[DEBUG] Requests library check failed.")
+             return None
+
+        print(f"[DEBUG] Preparing Gemini prompt for audience='{audience}' with {len(retrieved_docs)} docs.")
+        system_prompt = (
+            "You are the language agent in the MedAI multi-agent system. "
+            "You are given:\n"
+            "1) A structured fracture summary produced by a diagnostic ensemble.\n"
+            "2) Retrieved domain and technical documents from MedAI's curated knowledge base.\n\n"
+            "Your job is to explain the diagnosis and the system behavior using ONLY this context. "
+            "Do not invent new medical facts. Do not give direct medical advice or treatment plans. "
+            "Emphasize that this is informational and does not replace a clinician."
+        )
+
+        if audience == "clinician":
+            user_instruction = (
+                "Explain the diagnosis and relevant context to an orthopedic clinician or radiologist. "
+                "Include fracture type, ICD-style coding, likely management options at a high level, "
+                "and how the MedAI ensemble + Grad-CAM contribute to decision support."
+            )
+        else:
+            user_instruction = (
+                "Explain the diagnosis to a layperson patient. Use simple language to describe what "
+                "the fracture means, roughly how it is treated and what recovery might involve. "
+                "Avoid giving strict medical advice; encourage the patient to talk to their doctor."
+            )
+
+        docs_block = "\n\n---\n\n".join(
+            f"[{d['category']}] {d['title']}\n\n{d['content']}" for d in retrieved_docs
+        )
+
+        context = (
+            f"Structured summary:\n{summary}\n\n"
+            f"Retrieved MedAI RAG documents:\n\n{docs_block}"
+        )
+
+        # Gemini REST API Format
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+        
+        payload = {
+            "systemInstruction": {
+                "parts": [{"text": system_prompt}]
+            },
+            "contents": [{
+                "role": "user",
+                "parts": [{"text": user_instruction + "\n\nCONTEXT:\n" + context}]
+            }],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 1000
+            }
+        }
+
+        try:
+            print("[DEBUG] Sending request to Gemini API...")
+            print(f"[DEBUG] URL: {url.split('?')[0]}...") # Log without key
+            resp = requests.post(
+                url,
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=60.0
+            )
+            print(f"[DEBUG] Gemini Response Status: {resp.status_code}")
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if 'candidates' in data and data['candidates']:
+                print("[DEBUG] Successfully extracted candidate text.")
+                return data['candidates'][0]['content']['parts'][0]['text']
+            
+            print("[DEBUG] No candidates found in Gemini response.")
+            print(f"[DEBUG] Full response data: {data}")
+            return None
+        except Exception as e:
+            print(f"[DEBUG] Gemini call failed with exception: {e}")
+            if 'resp' in locals():
+                print(f"[DEBUG] Response content: {resp.text}")
+            st.warning(f"Gemini call failed: {e}")
+            return None
 
 
 # ============================================================================
@@ -1405,6 +1806,13 @@ def render_knowledge_base():
     with st.expander("Treatment Guidelines"):
         for guideline in summary.get("Treatment_Guidelines", []):
             st.markdown(f"• {guideline}")
+    
+    # Render Gemini Explanation
+    gemini_expl = st.session_state.get("gemini_explanation")
+    if gemini_expl:
+        st.markdown("---")
+        st.subheader("Detailed Technical Explanation")
+        st.info(gemini_expl)
 
 
 def render_chat_interface():
@@ -1551,6 +1959,37 @@ def run_analysis(image: Image.Image, config: dict, device):
             st.session_state.ensemble_result["ensemble_prediction"],
             st.session_state.ensemble_result["ensemble_confidence"]
         )
+        
+        # 2. RAG + Gemini Explanation
+        print("[DEBUG] Starting RAG + Gemini Explanation process...")
+        label = st.session_state.ensemble_result["ensemble_prediction"]
+        print(f"[DEBUG] Explanation Target Label: {label}")
+        
+        # Only proceed if we have a valid summary
+        if "error" not in st.session_state.medical_summary:
+            print("[DEBUG] Medical summary is valid.")
+            try:
+                # Retrieve context
+                print("[DEBUG] Calling retrieve_sources...")
+                relevant_docs = knowledge_agent.retrieve_sources(label) 
+                print(f"[DEBUG] retrieve_sources returned {len(relevant_docs)} items.")
+                
+                # Generate explanation
+                print("[DEBUG] Calling generate_explanation_with_gemini...")
+                st.session_state.gemini_explanation = knowledge_agent.generate_explanation_with_gemini(
+                    st.session_state.medical_summary,
+                    relevant_docs,
+                    audience="patient"
+                )
+                print(f"[DEBUG] Gemini explanation result length: {len(st.session_state.gemini_explanation) if st.session_state.gemini_explanation else 'None'}")
+            except Exception as e:
+                # Log error but don't crash usage flow
+                print(f"[DEBUG] ERROR in explanation pipeline: {e}")
+                logger.error(f"Failed to generate Gemini explanation: {e}")
+                st.session_state.gemini_explanation = None
+        else:
+            print(f"[DEBUG] Medical summary Error: {st.session_state.medical_summary.get('error')}")
+            st.session_state.gemini_explanation = None
     
     # Agent 5.5: Critic Agent (if enabled)
     if config.get("enable_critic", True):

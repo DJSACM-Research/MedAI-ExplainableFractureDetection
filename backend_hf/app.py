@@ -1,5 +1,3 @@
-
-
 import os
 from dotenv import load_dotenv
 import sys
@@ -540,13 +538,135 @@ class EducationalAgent:
             "next_steps_action_plan": action_plan
         }
 
+# ============================================================================
+# KNOWLEDGE BASE CONSTANTS
+# ============================================================================
+
+DIAG_COLLECTION_NAME = "medical_diagnoses"
+SOURCE_COLLECTION_NAME = "medai_sources"
+TOP_K_RESULTS = 3
+GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+# RAG Sources (Condensed for backend)
+RAG_SOURCE_DOCS = [
+    {
+        "id": "ao_ota_fracture_classification",
+        "category": "Fracture Classification & Terminology",
+        "title": "AO/OTA Fracture Classification System",
+        "content": (
+            "The AO/OTA fracture classification system is the international standard for "
+            "describing fractures using bone, segment and morphology codes (e.g., 31-A2). "
+            "It provides precise terminology for fracture location and pattern, enabling "
+            "consistent reporting and communication between clinicians. In MedAI, this "
+            "serves as the core diagnostic explainer that maps model outputs to standard "
+            "orthopedic language when describing why a fracture is classified a certain way."
+        ),
+        "use_case": "Explain fracture codes."
+    },
+    {
+        "id": "salter_harris_classification",
+        "category": "Fracture Classification & Terminology",
+        "title": "Salter-Harris Classification",
+        "content": "Salter-Harris describes fractures involving the epiphyseal growth plate in children (Types I–V).",
+        "use_case": "Pediatric fracture context."
+    },
+    {
+        "id": "aaos_orthoinfo",
+        "category": "Clinical Context & Management",
+        "title": "OrthoInfo (AAOS) Patient-Friendly Fracture Articles",
+        "content": "OrthoInfo provides patient-friendly explanations for fractures, covering symptoms, treatment, and recovery.",
+        "use_case": "Patient education."
+    },
+     {
+        "id": "radiopaedia_fracture_entries",
+        "category": "Radiology & Interpretation",
+        "title": "Radiopaedia Fracture Imaging Patterns",
+        "content": "Radiopaedia describes typical imaging appearances, variants, and pitfalls for fractures.",
+        "use_case": "Explain imaging features."
+    },
+     {
+        "id": "grad_cam_paper",
+        "category": "Explainable AI",
+        "title": "Grad-CAM: Visual Explanations",
+        "content": "Grad-CAM highlights spatial regions contributing to predictions, offering visual explainability.",
+        "use_case": "Explain heatmaps."
+    },
+    {
+        "id": "llama3_technical_report",
+        "category": "Multi-Agent & RAG/LLM",
+        "title": "LLaMA 3 / Gemini Capabilities",
+        "content": "LLMs like Gemini/LLaMA are used to synthesize technical data into human-readable summaries.",
+        "use_case": "Meta-explanation of the AI agent."
+    }
+]
+
 class KnowledgeAgent:
+    """
+    MedAI Knowledge Agent (Advanced Backend Version):
+    - Managed ChromaDB (if available)
+    - RAG retrieval
+    - Gemini-powered explanations
+    """
     def __init__(self):
         self.knowledge_base = MEDICAL_KNOWLEDGE_BASE
+        self.client = None
+        self.diag_collection = None
+        self.source_collection = None
+
+        if CHROMADB_AVAILABLE:
+            try:
+                # Persistent Chroma client
+                self.client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+                self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                    model_name=EMBEDDING_MODEL_NAME
+                )
+                self.diag_collection = self._setup_diag_collection()
+                self.source_collection = self._setup_source_collection()
+            except Exception as e:
+                logger.warning(f"Knowledge Agent ChromaDB init failed: {e}")
+
+    def _setup_diag_collection(self):
+        try:
+            collection = self.client.get_or_create_collection(
+                name=DIAG_COLLECTION_NAME,
+                embedding_function=self.embedding_fn,
+            )
+            if collection.count() == 0:
+                diagnoses = list(self.knowledge_base.keys())
+                ids = [d.lower().replace(" ", "-") for d in diagnoses]
+                collection.add(documents=diagnoses, ids=ids)
+            return collection
+        except Exception:
+            return None
+
+    def _setup_source_collection(self):
+        try:
+            collection = self.client.get_or_create_collection(
+                name=SOURCE_COLLECTION_NAME,
+                embedding_function=self.embedding_fn,
+            )
+            if collection.count() == 0:
+                ids = [doc["id"] for doc in RAG_SOURCE_DOCS]
+                docs = [f"Title: {doc['title']}\nContent: {doc['content']}" for doc in RAG_SOURCE_DOCS]
+                metadatas = [{"title": doc["title"], "category": doc["category"]} for doc in RAG_SOURCE_DOCS]
+                collection.add(ids=ids, documents=docs, metadatas=metadatas)
+            return collection
+        except Exception:
+            return None
     
     def get_medical_summary(self, diagnosis: str, confidence: float) -> Dict[str, Any]:
         diagnosis = diagnosis.strip()
         raw = self.knowledge_base.get(diagnosis, {})
+        if not raw:
+            # Fallback or try vector search if exact match fails
+            if self.diag_collection:
+                results = self.diag_collection.query(query_texts=[diagnosis], n_results=1)
+                if results and results["documents"] and results["documents"][0]:
+                    best_match = results["documents"][0][0]
+                    raw = self.knowledge_base.get(best_match, {})
+                    diagnosis = best_match # Update to matched name
+            
         if not raw:
             return {"error": f"No information found for '{diagnosis}'"}
         
@@ -559,6 +679,56 @@ class KnowledgeAgent:
             "Treatment_Guidelines": raw.get("treatment_guidelines", []),
             "Long_Term_Prognosis": raw.get("prognosis", "N/A")
         }
+
+    def retrieve_sources(self, query: str, top_k: int = TOP_K_RESULTS) -> List[Dict[str, Any]]:
+        if not self.source_collection:
+            return []
+        try:
+            results = self.source_collection.query(
+                query_texts=[query],
+                n_results=top_k,
+                include=["documents", "metadatas"],
+            )
+            docs = results.get("documents", [[]])[0]
+            metas = results.get("metadatas", [[]])[0]
+            out = []
+            for d, m in zip(docs, metas):
+                out.append({"content": d, "title": m.get("title"), "category": m.get("category")})
+            return out
+        except Exception:
+            return []
+
+    def generate_explanation_with_gemini(self, summary: Dict[str, Any], retrieved_docs: List[Dict[str, Any]]) -> Optional[str]:
+        if not GEMINI_API_KEY:
+            return None
+            
+        context = f"Diagnosis: {summary.get('Diagnosis')}\nDetails: {summary}\n\nRelated Docs:\n" + \
+                  "\n".join([d['content'] for d in retrieved_docs])
+        
+        system_prompt = (
+            "You are MedAI. Explain this fracture diagnosis to a patient. "
+            "Use the provided context. Be clear, empathetic, but informational. "
+            "Do NOT give medical advice."
+        )
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [{
+                "role": "user",
+                "parts": [{"text": f"Explain this:\n{context}"}]
+            }],
+            "systemInstruction": {"parts": [{"text": system_prompt}]}
+        }
+        
+        try:
+            resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                if 'candidates' in data and data['candidates']:
+                    return data['candidates'][0]['content']['parts'][0]['text']
+        except Exception as e:
+            logger.error(f"Gemini explanation failed: {e}")
+        return None
 
 # ============================================================================
 # API
@@ -742,6 +912,17 @@ def process_image(image_or_bytes,
     # 5. Knowledge Base
     know_agent = KnowledgeAgent()
     kb_result = know_agent.get_medical_summary(ensemble_result['ensemble_prediction'], ensemble_result['ensemble_confidence'])
+    
+    # 5b. Gemini Explanation (if configured)
+    gemini_explanation = None
+    if "error" not in kb_result and GEMINI_API_KEY:
+        try:
+            r_docs = know_agent.retrieve_sources(ensemble_result['ensemble_prediction'])
+            gemini_explanation = know_agent.generate_explanation_with_gemini(kb_result, r_docs)
+            if gemini_explanation:
+                kb_result["gemini_explanation"] = gemini_explanation
+        except Exception as e:
+            logger.error(f"Gemini generation error: {e}")
 
     # 6. Optional conformal set
     if use_conformal and str(use_conformal).lower() in ('1', 'true', 'yes', 'on'):
