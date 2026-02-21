@@ -21,16 +21,27 @@ MedAI is designed to assist healthcare professionals in diagnosing bone fracture
 
 ### Key Highlights
 
-- 🧠 **9 Trained Models** working in ensemble for robust predictions
+- 🧠 **11 Trained Models** working in ensemble for robust predictions
 - 🎯 **Weighted Voting** with priority for specialized HyperColumn models on specific fracture types
 - 🔥 **Grad-CAM Visualizations** showing exactly where the AI focuses
 - 📚 **RAG Knowledge Base** powered by ChromaDB for medical information retrieval
 - 💬 **LLM-Powered Chat** for patient Q&A using OpenRouter API
 - 🏥 **Patient-Friendly Explanations** translating medical jargon
+- 🌐 **Next.js Web Interface** for a modern, responsive user experience
+- 📄 **Comprehensive Research Report** detailing the methodology and results
 
 ---
 
-## 🏗️ System Architecture
+## � Web Interface & Report
+
+The system now includes a modern web interface built with Next.js and a comprehensive research report.
+
+- **Website**: Located in the `website/` directory, built with Next.js 14, Tailwind CSS, and Shadcn UI. It connects to a Python backend (e.g., deployed on Hugging Face Spaces) for inference.
+- **Research Report**: A detailed report (`website/medai_diagnosis_report.pdf`) is available, documenting the methodology, model architectures, and evaluation results.
+
+---
+
+## �🏗️ System Architecture
 
 ### Multi-Agent Pipeline
 
@@ -95,6 +106,26 @@ DEFAULT_WEIGHT = 1.0
 | `hypercolumn_cbam_densenet169_focal` | Custom                 | 20M        | Above + Focal loss training                |
 | `hypercolumn_densenet169`            | Custom                 | 18M        | DenseNet169 + Hypercolumn features         |
 | `hypercolumn_densenet169_old`        | Custom                 | 18M        | Legacy hypercolumn model                   |
+| `yolo`                               | YOLOv26 Classification | 26M        | Fast and accurate object classification    |
+| `rad_dino`                           | Rad-DINO               | 86M        | Foundation model for medical imaging       |
+
+### Model Benchmark Results
+
+Based on the latest evaluation (`outputs/model_benchmark.csv`), the models perform as follows:
+
+| Model                                       | Accuracy | F1 Macro | Best Logic |
+| ------------------------------------------- | -------- | -------- | ---------- |
+| `best_maxvit.pth`                           | 96.23%   | 96.61%   | Fixed      |
+| `weights/best.pt` (YOLO)                    | 93.40%   | 93.82%   | YOLO       |
+| `best_hypercolumn_cbam_densenet169.pth`     | 93.40%   | 93.65%   | Original   |
+| `best_rad_dino_classifier.pth`              | 92.45%   | 93.11%   | RadDino    |
+| `best_swin.pth`                             | 92.45%   | 93.11%   | Original   |
+| `best_mobilenetv2.pth`                      | 91.51%   | 91.81%   | Fixed      |
+| `best_efficientnetv2.pth`                   | 90.57%   | 91.26%   | Fixed      |
+| `best_densenet169.pth`                      | 89.62%   | 90.49%   | Fixed      |
+| `best_hypercolumn_densenet169.pth`          | 48.11%   | 49.60%   | Original   |
+| `best_hypercolumn_cbam_densenet169_old.pth` | 47.17%   | 49.76%   | Original   |
+| `best_hypercolumn_densenet169_old.pth`      | 47.17%   | 49.76%   | Original   |
 
 ### Custom HyperColumn-CBAM Architecture
 
@@ -134,6 +165,15 @@ Input Image (224×224×3)
 
 ```
 MedAI-ExplainableFractureDetection/
+├── 📂 website/                          # Next.js web interface
+│   ├── 📄 package.json
+│   ├── 📄 README.md
+│   └── 📄 medai_diagnosis_report.pdf    # Comprehensive research report
+│
+├── 📂 backend_hf/                       # Hugging Face Spaces backend
+│   ├── 🐍 app.py
+│   └── 📄 requirements.txt
+│
 ├── 📂 src/
 │   └── 📂 medai/
 │       ├── 🐍 app.py                    # Main Streamlit application (all agents)
