@@ -9,6 +9,19 @@ from typing import List, Dict, Any, Optional, Union
 import timm 
 from medai.uncertainty.conformal import predict_conformal_set
 
+# RAD-DINO / YOLO support
+try:
+    from transformers import AutoModel, AutoImageProcessor
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+
+try:
+    from ultralytics import YOLO
+    ULTRALYTICS_AVAILABLE = True
+except ImportError:
+    ULTRALYTICS_AVAILABLE = False
+
 # ----------------------------------------------------------------------
 # --- Helper Functions (Duplicated for standalone capability) ---
 # ----------------------------------------------------------------------
@@ -97,6 +110,107 @@ def _swap_prediction_label(label: str) -> str:
     return label
 
 # ----------------------------------------------------------------------
+# --- RAD-DINO and YOLO helpers ---
+# ----------------------------------------------------------------------
+
+RAD_DINO_MODEL_NAME = "microsoft/rad-dino"
+
+CLASS_NAMES = [
+    "Comminuted", "Greenstick", "Healthy", "Oblique",
+    "Oblique Displaced", "Spiral", "Transverse", "Transverse Displaced"
+]
+
+YOLO_SEARCH_PATHS = [
+    "outputs/yolo_cls_finetune/yolo_cls_ft/weights/best.pt",
+    "models/yolo_best.pt",
+    "models/best.pt",
+    "outputs/weights/best.pt",
+    "weights/best.pt",
+]
+
+
+def _detect_rad_dino_head_type(state_dict):
+    """Detect whether the saved RAD-DINO checkpoint uses a linear or MLP head."""
+    for key in state_dict:
+        if key.startswith("head.") and "head.0." in key:
+            return "mlp"
+    return "linear"
+
+
+class RadDinoClassifier(nn.Module):
+    """Wrapper that loads microsoft/rad-dino backbone + trained classification head."""
+    def __init__(self, num_classes: int = 8, head_type: str = "linear"):
+        super(RadDinoClassifier, self).__init__()
+        self.backbone = AutoModel.from_pretrained(RAD_DINO_MODEL_NAME)
+        hidden = self.backbone.config.hidden_size
+        if head_type == "mlp":
+            self.head = nn.Sequential(
+                nn.Linear(hidden, hidden),
+                nn.GELU(),
+                nn.Dropout(0.3),
+                nn.Linear(hidden, num_classes),
+            )
+        else:
+            self.head = nn.Linear(hidden, num_classes)
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        out = self.backbone(pixel_values=pixel_values)
+        cls_token = out.last_hidden_state[:, 0]
+        return self.head(cls_token)
+
+
+def get_rad_dino_processor():
+    return AutoImageProcessor.from_pretrained(RAD_DINO_MODEL_NAME)
+
+
+def get_rad_dino_input_tensor(image: Image.Image, dev) -> torch.Tensor:
+    processor = get_rad_dino_processor()
+    inputs = processor(images=image, return_tensors="pt")
+    return inputs["pixel_values"].to(dev)
+
+
+def _is_rad_dino_model_name(name: str) -> bool:
+    return "rad_dino" in name.lower()
+
+
+class YOLOClassifierWrapper(nn.Module):
+    """Wraps an ultralytics YOLO classification model for ensemble use."""
+    def __init__(self, yolo_model, class_names: List[str]):
+        super().__init__()
+        self.yolo = yolo_model
+        self.class_names = class_names
+        self._build_index_map()
+
+    def _build_index_map(self):
+        yolo_names = self.yolo.names if hasattr(self.yolo, "names") else {}
+        self.index_map = {}
+        for yidx, yname in yolo_names.items():
+            for cidx, cname in enumerate(self.class_names):
+                if yname.strip().lower() == cname.strip().lower():
+                    self.index_map[yidx] = cidx
+                    break
+
+    def predict_pil(self, image: Image.Image) -> np.ndarray:
+        results = self.yolo.predict(source=image, verbose=False)
+        raw_probs = results[0].probs.data.cpu().numpy()
+        aligned = np.zeros(len(self.class_names), dtype=np.float32)
+        for yidx, prob in enumerate(raw_probs):
+            cidx = self.index_map.get(yidx)
+            if cidx is not None:
+                aligned[cidx] = prob
+        s = aligned.sum()
+        if s > 0:
+            aligned /= s
+        return aligned
+
+    def forward(self, x):
+        raise NotImplementedError("Use predict_pil() for YOLO-based inference")
+
+
+def _is_yolo_model(model) -> bool:
+    return isinstance(model, YOLOClassifierWrapper)
+
+# ----------------------------------------------------------------------
 # --- Ensemble Module Core ---
 # ----------------------------------------------------------------------
 
@@ -137,22 +251,51 @@ class EnsembleModule:
             raise ValueError("Either 'models' dict OR ('model_names' list AND 'checkpoints_dir') must be provided.")
             
     def _load_all_models(self, checkpoints_dir: str):
-        """Loads all specified model checkpoints."""
+        """Loads all specified model checkpoints including RAD-DINO and YOLO."""
         print(f"Loading {len(self.model_names)} models from {checkpoints_dir} on {self.device}...")
         
         for name in self.model_names:
-            checkpoint_path = os.path.join(checkpoints_dir, f"best_{name}.pth")
             try:
-                # Need robust model loading here. 
-                # Assuming generic names like 'densenet169' work with get_model logic
-                # For hypercolumn models, the name might be complex e.g. 'hypercolumn_densenet169'
-                # get_model needs to handle it or map it.
-                # For simplicity here, we assume standard base names or logic in get_model handles it.
-                # If name contains 'hypercolumn', we might need special class or just load weights into densenet?
-                # Usually hypercolumn models have specific architecture.
-                # If get_model fails, we skip.
-                
-                # Check if it's a known architecture base
+                # --- RAD-DINO ---
+                if _is_rad_dino_model_name(name):
+                    if not TRANSFORMERS_AVAILABLE:
+                        print(f"  ⚠️ Skipping {name}: transformers not installed.")
+                        continue
+                    ckpt_path = os.path.join(checkpoints_dir, "best_rad_dino_classifier.pth")
+                    if not os.path.exists(ckpt_path):
+                        print(f"  ❌ RAD-DINO checkpoint not found at {ckpt_path}. Skipping.")
+                        continue
+                    sd = torch.load(ckpt_path, map_location=self.device)
+                    state_dict = sd.get("model_state_dict", sd)
+                    head_type = _detect_rad_dino_head_type(state_dict)
+                    model = RadDinoClassifier(self.num_classes, head_type=head_type)
+                    model.load_state_dict(state_dict, strict=False)
+                    model.to(self.device).eval()
+                    self.models[name] = model
+                    print(f"  ✅ Successfully loaded {name} (RAD-DINO, head={head_type}).")
+                    continue
+
+                # --- YOLO ---
+                if name.lower() in ("yolo", "yolov26m", "yolo26m"):
+                    if not ULTRALYTICS_AVAILABLE:
+                        print(f"  ⚠️ Skipping {name}: ultralytics not installed.")
+                        continue
+                    yolo_path = None
+                    for sp in YOLO_SEARCH_PATHS:
+                        if os.path.exists(sp):
+                            yolo_path = sp
+                            break
+                    if yolo_path is None:
+                        print(f"  ❌ YOLO checkpoint not found. Searched: {YOLO_SEARCH_PATHS}. Skipping.")
+                        continue
+                    yolo_raw = YOLO(yolo_path, task="classify")
+                    wrapper = YOLOClassifierWrapper(yolo_raw, self.class_names)
+                    self.models[name] = wrapper
+                    print(f"  ✅ Successfully loaded {name} (YOLO) from {yolo_path}.")
+                    continue
+
+                # --- Standard timm / hypercolumn models ---
+                checkpoint_path = os.path.join(checkpoints_dir, f"best_{name}.pth")
                 base_arch = 'densenet169' if 'densenet' in name else name
                 model = get_model(base_arch, self.num_classes, pretrained=False).to(self.device)
                 
@@ -238,8 +381,23 @@ class EnsembleModule:
         individual_predictions = {}
         
         for name, model in self.models.items():
-            outputs = model(input_tensor)
-            probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
+            try:
+                if _is_yolo_model(model):
+                    # YOLO has its own preprocessing pipeline
+                    probs = model.predict_pil(img)
+                elif _is_rad_dino_model_name(name):
+                    # RAD-DINO uses HuggingFace AutoImageProcessor
+                    rad_tensor = get_rad_dino_input_tensor(img, self.device)
+                    logits = model(rad_tensor)
+                    probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                else:
+                    # Standard timm model
+                    outputs = model(input_tensor)
+                    probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
+            except Exception as e:
+                print(f"  ⚠️ Inference failed for {name}: {e}. Skipping.")
+                continue
+                
             all_probs.append(probs)
             model_names.append(name)
             
@@ -250,6 +408,9 @@ class EnsembleModule:
                 "class": _swap_prediction_label(pred_class_raw),
                 "confidence": float(probs[pred_idx])
             }
+        
+        if not all_probs:
+            return {"error": "All models failed during inference"}
         
         # First pass: compute equal-weighted average to determine likely class
         equal_avg_probs = np.mean(all_probs, axis=0)

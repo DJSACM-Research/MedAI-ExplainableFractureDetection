@@ -8,7 +8,7 @@ Outputs:
  - outputs/hypercolumn_weight.txt (best weight)
 
 Usage:
-  python scripts/prepare_val_and_calibrate.py --checkpoints ./models --models swin,mobilenetv2,... --alpha 0.10
+  python scripts/prepare_val_and_calibrate.py --checkpoints ./models --models maxvit,yolo,hypercolumn_cbam_densenet169,rad_dino --alpha 0.10
 """
 import os
 import argparse
@@ -16,6 +16,7 @@ import sys
 import numpy as np
 from PIL import Image
 import json
+import torch
 
 sys.path.insert(0, os.path.abspath('src'))
 from medai import app
@@ -36,10 +37,25 @@ def is_hypercolumn(name):
     return 'hypercolumn' in name.lower() or 'cbam' in name.lower()
 
 
+def _model_probs_single(name, model, pil_img, tensor, device):
+    """Get probabilities for a single model, dispatching by type."""
+    if app.is_yolo_model(model):
+        return model.predict_pil(pil_img)
+    elif app.is_rad_dino_model(name):
+        rad_tensor = app.get_rad_dino_input_tensor(pil_img, device)
+        with torch.no_grad():
+            logits = model(rad_tensor)
+        return torch.softmax(logits, dim=1).cpu().numpy()[0]
+    else:
+        with torch.no_grad():
+            out = model(tensor)
+        return torch.softmax(out, dim=1).cpu().numpy()[0]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoints', default='./models')
-    parser.add_argument('--models', default='swin,mobilenetv2,efficientnetv2,maxvit,densenet169')
+    parser.add_argument('--models', default='maxvit,yolo,hypercolumn_cbam_densenet169,rad_dino')
     parser.add_argument('--alpha', type=float, default=0.10)
     parser.add_argument('--output-npz', default='outputs/val_calib.npz')
     parser.add_argument('--threshold-out', default='conformal_threshold.txt')
@@ -64,9 +80,9 @@ def main():
     print(f'Loaded {N} validation entries')
 
     # Pre-allocate arrays
-    # model_probs: shape (N, M, C)
-    # We'll infer C from first model
-    sample_img_path = rows[0][0]
+    C = len(app.CLASS_NAMES)  # known = 8
+    print('Number of classes:', C)
+
     def resolve(p):
         if os.path.exists(p):
             return p
@@ -78,18 +94,7 @@ def main():
             return p3
         raise FileNotFoundError(p)
 
-    sample_img_path = resolve(sample_img_path)
-    img = Image.open(sample_img_path).convert('RGB')
     transforms = app.get_transforms(app.IMG_SIZE)
-    input_tensor = transforms(img).unsqueeze(0).to(device)
-    # forward pass on first model to get C
-    first_model = models[model_names[0]]
-    import torch
-    with torch.no_grad():
-        out = first_model(input_tensor)
-        C = int(out.shape[1])
-    print('Detected classes:', C)
-
     model_probs = np.zeros((N, M, C), dtype=np.float32)
     labels = np.zeros((N,), dtype=np.int32)
 
@@ -104,9 +109,11 @@ def main():
         labels[i] = label
         for j, name in enumerate(model_names):
             model = models[name]
-            with torch.no_grad():
-                out = model(tensor)
-                probs = torch.softmax(out, dim=1).cpu().numpy()[0]
+            try:
+                probs = _model_probs_single(name, model, pil, tensor, device)
+            except Exception as e:
+                print(f'  ⚠️ Inference failed for {name} on sample {i}: {e}')
+                continue
             model_probs[i, j] = probs
         if (i+1) % 20 == 0 or i == N-1:
             print(f'Processed {i+1}/{N}')

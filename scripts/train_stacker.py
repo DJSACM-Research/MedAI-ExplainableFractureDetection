@@ -27,10 +27,14 @@ def main():
     parser.add_argument('--test-size', type=float, default=0.2)
     args = parser.parse_args()
 
-    data = np.load(args.input)
+    data = np.load(args.input, allow_pickle=True)
     model_probs = data['model_probs']  # (N, M, C)
     labels = data['labels']
+    model_names = data['model_names'].tolist() if 'model_names' in data else []
     N, M, C = model_probs.shape
+    print(f'Loaded {N} samples, {M} models, {C} classes')
+    if model_names:
+        print(f'Models: {model_names}')
 
     X = model_probs.reshape(N, M*C)
     y = labels
@@ -61,7 +65,13 @@ def main():
     joblib.dump(best, args.out)
 
     with open('outputs/stacker_eval.json', 'w') as fh:
-        json.dump({'val_accuracy': float(acc), 'best_params': gs.best_params_}, fh, indent=2)
+        json.dump({
+            'val_accuracy': float(acc),
+            'best_params': gs.best_params_,
+            'model_names': model_names,
+            'num_models': M,
+            'num_classes': C,
+        }, fh, indent=2)
 
     print('Best params:', gs.best_params_)
     print('Trained stacker, val acc:', acc)

@@ -71,6 +71,39 @@ interface DiagnosisResponse {
   };
 }
 
+// Friendly display names for model keys returned by the backend
+const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  maxvit: "MaxViT",
+  yolo: "YOLOv26m",
+  yolov26m: "YOLOv26m",
+  hypercolumn_cbam_densenet169: "HC-CBAM-DenseNet169",
+  rad_dino: "RAD-DINO",
+  swin: "Swin Transformer",
+  mobilenetv2: "MobileNetV2",
+  efficientnetv2: "EfficientNetV2",
+  densenet169: "DenseNet169",
+};
+
+// Models whose architecture doesn't support Grad-CAM
+const GRADCAM_EXCLUDED_MODELS = new Set(["yolo", "yolov26m", "rad_dino"]);
+
+function getModelDisplayName(key: string): string {
+  return MODEL_DISPLAY_NAMES[key.toLowerCase()] || key;
+}
+
+function getModelBadge(key: string): { label: string; color: string } | null {
+  const k = key.toLowerCase();
+  if (k.includes("yolo"))
+    return { label: "YOLO", color: "bg-amber-500/20 text-amber-400" };
+  if (k.includes("rad_dino") || k.includes("dino"))
+    return { label: "ViT", color: "bg-purple-500/20 text-purple-400" };
+  if (k.includes("hypercolumn") || k.includes("cbam"))
+    return { label: "HC-CBAM", color: "bg-cyan-500/20 text-cyan-400" };
+  if (k.includes("maxvit") || k.includes("swin"))
+    return { label: "Transformer", color: "bg-blue-500/20 text-blue-400" };
+  return null;
+}
+
 export default function DiagnosePage() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -660,6 +693,19 @@ export default function DiagnosePage() {
                           <div className="text-sm text-muted-foreground">
                             Per-model Grad-CAMs:
                           </div>
+                          {/* Note about excluded models */}
+                          {result.prediction.individual_model_predictions &&
+                            Object.keys(
+                              result.prediction.individual_model_predictions,
+                            ).some((k) =>
+                              GRADCAM_EXCLUDED_MODELS.has(k.toLowerCase()),
+                            ) && (
+                              <div className="text-xs text-muted-foreground bg-muted/30 p-2 rounded flex items-center gap-1">
+                                <AlertCircle className="h-3 w-3" />
+                                YOLO and RAD-DINO models are excluded from
+                                Grad-CAM due to architectural incompatibility.
+                              </div>
+                            )}
                           <div className="grid grid-cols-2 gap-3">
                             {Object.entries(
                               (result as any).explanation.per_model_heatmaps,
@@ -680,7 +726,7 @@ export default function DiagnosePage() {
                                   }`}
                                 >
                                   <div className="text-sm truncate max-w-[160px] font-medium">
-                                    {mname}
+                                    {getModelDisplayName(mname)}
                                   </div>
                                   <div className="flex items-center gap-2">
                                     <button
@@ -882,28 +928,47 @@ export default function DiagnosePage() {
                         <div className="grid gap-2 mt-2">
                           {Object.entries(
                             result.prediction.individual_model_predictions,
-                          ).map(([m, info]: any) => (
-                            <div
-                              key={m}
-                              className={`flex items-center justify-between gap-4 py-2 px-2 ${
-                                medicalLight
-                                  ? "bg-white/5"
-                                  : "bg-neutral-900/10"
-                              } rounded`}
-                            >
-                              <div className="min-w-0">
-                                <div className="font-medium truncate">{m}</div>
-                                <div className="text-xs text-muted-foreground truncate max-w-[60ch]">
-                                  {info.class}
+                          ).map(([m, info]: any) => {
+                            const badge = getModelBadge(m);
+                            return (
+                              <div
+                                key={m}
+                                className={`flex items-center justify-between gap-4 py-2 px-2 ${
+                                  medicalLight
+                                    ? "bg-white/5"
+                                    : "bg-neutral-900/10"
+                                } rounded`}
+                              >
+                                <div className="min-w-0">
+                                  <div className="font-medium truncate flex items-center gap-2">
+                                    {getModelDisplayName(m)}
+                                    {badge && (
+                                      <span
+                                        className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${badge.color}`}
+                                      >
+                                        {badge.label}
+                                      </span>
+                                    )}
+                                    {GRADCAM_EXCLUDED_MODELS.has(
+                                      m.toLowerCase(),
+                                    ) && (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-neutral-500/20 text-neutral-400 font-medium">
+                                        No Grad-CAM
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground truncate max-w-[60ch]">
+                                    {info.class}
+                                  </div>
+                                </div>
+                                <div className="ml-4 flex-shrink-0 text-right">
+                                  <div className="text-sm font-semibold">
+                                    {(info.confidence * 100).toFixed(2)}%
+                                  </div>
                                 </div>
                               </div>
-                              <div className="ml-4 flex-shrink-0 text-right">
-                                <div className="text-sm font-semibold">
-                                  {(info.confidence * 100).toFixed(2)}%
-                                </div>
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     </details>

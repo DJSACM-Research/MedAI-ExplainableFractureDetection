@@ -322,7 +322,22 @@ MODEL_CONFIGS = {
     "hypercolumn_cbam_densenet169_focal": "custom",
     "hypercolumn_densenet169": "custom",
     "hypercolumn_densenet169_old": "custom",
+    # RAD-DINO and YOLO (special loading paths)
+    "rad_dino": "rad_dino",
+    "yolo": "yolo",
 }
+
+# RAD-DINO constants
+RAD_DINO_MODEL_NAME = "microsoft/rad-dino"
+
+# YOLO model search paths
+YOLO_SEARCH_PATHS = [
+    "outputs/yolo_cls_finetune/yolo_cls_ft/weights/best.pt",
+    "models/yolo_best.pt",
+    "models/best.pt",
+    "outputs/weights/best.pt",
+    "weights/best.pt",
+]
 
 # OpenRouter configuration
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
@@ -623,6 +638,139 @@ RAG_SOURCE_DOCS: List[Dict[str, Any]] = [
 ]
 
 # ============================================================================
+# RAD-DINO CLASSIFIER
+# ============================================================================
+
+class RadDinoClassifier(nn.Module):
+    """RAD-DINO backbone with a classification head."""
+    def __init__(self, num_classes, head_type='linear'):
+        super(RadDinoClassifier, self).__init__()
+        from transformers import AutoModel
+        self.backbone = AutoModel.from_pretrained(RAD_DINO_MODEL_NAME)
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        self.hidden_size = self.backbone.config.hidden_size
+        if head_type == 'mlp':
+            self.classifier = nn.Sequential(
+                nn.Linear(self.hidden_size, 512),
+                nn.BatchNorm1d(512),
+                nn.ReLU(),
+                nn.Dropout(0.5),
+                nn.Linear(512, 256),
+                nn.BatchNorm1d(256),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(256, num_classes)
+            )
+        else:
+            self.classifier = nn.Linear(self.hidden_size, num_classes)
+
+    def forward(self, pixel_values):
+        outputs = self.backbone(pixel_values=pixel_values)
+        cls_embedding = outputs.last_hidden_state[:, 0, :]
+        return self.classifier(cls_embedding)
+
+
+def _detect_rad_dino_head_type(state_dict):
+    """Detect whether a RAD-DINO checkpoint uses 'linear' or 'mlp' head."""
+    for k in state_dict.keys():
+        if "classifier.0.weight" in k:
+            return "mlp"
+    return "linear"
+
+
+_rad_dino_processor = None
+
+def get_rad_dino_processor():
+    """Lazy-load the RAD-DINO image processor."""
+    global _rad_dino_processor
+    if _rad_dino_processor is None:
+        try:
+            from transformers import AutoImageProcessor
+            _rad_dino_processor = AutoImageProcessor.from_pretrained(RAD_DINO_MODEL_NAME)
+        except Exception:
+            pass
+    return _rad_dino_processor
+
+
+def get_rad_dino_input_tensor(image: Image.Image, dev) -> torch.Tensor:
+    """Preprocess a PIL image for RAD-DINO."""
+    processor = get_rad_dino_processor()
+    if processor is None:
+        raise RuntimeError("RAD-DINO processor not available")
+    inputs = processor(images=image, return_tensors="pt")
+    return inputs['pixel_values'].to(dev)
+
+
+def is_rad_dino_model(name: str) -> bool:
+    """Check if a model name refers to RAD-DINO."""
+    return "rad_dino" in name.lower() or "raddino" in name.lower()
+
+# ============================================================================
+# YOLO CLASSIFIER WRAPPER
+# ============================================================================
+
+class YOLOClassifierWrapper(nn.Module):
+    """Wraps a YOLO model to produce class probabilities aligned with CLASS_NAMES."""
+    def __init__(self, yolo_model, class_names: List[str]):
+        super().__init__()
+        self.yolo_model = yolo_model
+        self.class_names = class_names
+        self._build_class_mapping()
+
+    def _build_class_mapping(self):
+        self.yolo_to_canonical = {}
+        if not hasattr(self.yolo_model, 'names'):
+            return
+        for yolo_idx, yolo_name in self.yolo_model.names.items():
+            for canon_idx, canon_name in enumerate(self.class_names):
+                if yolo_name == canon_name or \
+                   yolo_name.replace('_', ' ') == canon_name or \
+                   yolo_name.replace(' ', '_') == canon_name:
+                    self.yolo_to_canonical[yolo_idx] = canon_idx
+                    break
+
+    def predict_pil(self, image: Image.Image) -> np.ndarray:
+        """Run YOLO prediction and return probabilities in CLASS_NAMES order."""
+        results = self.yolo_model.predict(image, verbose=False)
+        result = results[0]
+        probs = np.zeros(len(self.class_names), dtype=np.float32)
+
+        task = getattr(self.yolo_model, 'task', 'classify')
+        if task == 'classify' and hasattr(result, 'probs') and result.probs is not None:
+            raw_probs = result.probs.data.cpu().numpy()
+            for yolo_idx, canon_idx in self.yolo_to_canonical.items():
+                if yolo_idx < len(raw_probs):
+                    probs[canon_idx] = raw_probs[yolo_idx]
+        elif hasattr(result, 'boxes') and result.boxes is not None and len(result.boxes) > 0:
+            best_idx = int(result.boxes.conf.argmax())
+            pred_class = int(result.boxes.cls[best_idx].item())
+            conf = float(result.boxes.conf[best_idx].item())
+            canon_idx = self.yolo_to_canonical.get(pred_class)
+            if canon_idx is not None:
+                probs[canon_idx] = conf
+                remaining = 1.0 - conf
+                n_other = len(self.class_names) - 1
+                for i in range(len(self.class_names)):
+                    if i != canon_idx:
+                        probs[i] = remaining / n_other if n_other > 0 else 0
+        else:
+            probs = np.ones(len(self.class_names), dtype=np.float32) / len(self.class_names)
+
+        s = probs.sum()
+        if s > 0:
+            probs = probs / s
+        return probs
+
+    def forward(self, x):
+        raise NotImplementedError("Use predict_pil() for YOLO models.")
+
+
+def is_yolo_model(model) -> bool:
+    """Check if a model is a YOLO wrapper."""
+    return isinstance(model, YOLOClassifierWrapper)
+
+# ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
 
@@ -663,9 +811,11 @@ def get_model(name: str, num_classes: int, pretrained: bool = False):
     
     # Handle custom HypercolumnCBAMDenseNet model
     if "hypercolumn" in name.lower() or "cbam" in name.lower():
-        # Note: Model configs are passed via kwargs if needed, but current init is fixed
-        # Check if we need to map model name to config
         return HypercolumnCBAMDenseNet(num_classes=num_classes)
+    
+    # Skip RAD-DINO and YOLO — they have separate loading paths
+    if name in ("rad_dino", "yolo"):
+        return None
     
     model_name = MODEL_CONFIGS.get(name, name)
     try:
@@ -1224,10 +1374,56 @@ def initialize_session_state():
 
 
 def load_models(checkpoint_dir: str, selected_models: List[str], device):
-    """Loads selected models from checkpoint directory."""
+    """Loads selected models from checkpoint directory.
+    
+    Supports standard timm models, hypercolumn, RAD-DINO, and YOLO.
+    """
     models = {}
     
     for model_name in selected_models:
+        # --- RAD-DINO ---
+        if is_rad_dino_model(model_name):
+            checkpoint_path = os.path.join(checkpoint_dir, "best_rad_dino_classifier.pth")
+            if not os.path.exists(checkpoint_path):
+                st.warning(f"RAD-DINO checkpoint not found: {checkpoint_path}")
+                continue
+            try:
+                ck = torch.load(checkpoint_path, map_location=device)
+                state_dict = ck.get('model_state_dict', ck) if isinstance(ck, dict) else ck
+                head_type = _detect_rad_dino_head_type(state_dict)
+                model = RadDinoClassifier(NUM_CLASSES, head_type=head_type)
+                model.load_state_dict(state_dict, strict=False)
+                model.to(device)
+                model.eval()
+                models[model_name] = model
+                print(f"  Loaded RAD-DINO ({head_type} head)")
+            except Exception as e:
+                st.warning(f"Failed to load RAD-DINO: {e}")
+            continue
+
+        # --- YOLO ---
+        if "yolo" in model_name.lower():
+            loaded = False
+            for yp in YOLO_SEARCH_PATHS:
+                if os.path.exists(yp):
+                    try:
+                        from ultralytics import YOLO
+                        yolo_raw = YOLO(yp)
+                        wrapper = YOLOClassifierWrapper(yolo_raw, CLASS_NAMES)
+                        models[model_name] = wrapper
+                        print(f"  Loaded YOLO from {yp}")
+                        loaded = True
+                        break
+                    except ImportError:
+                        st.warning("ultralytics not installed — cannot load YOLO model")
+                        break
+                    except Exception as e:
+                        print(f"  Failed to load YOLO from {yp}: {e}")
+            if not loaded:
+                st.warning(f"Could not find valid YOLO checkpoint for {model_name}")
+            continue
+
+        # --- Standard timm / hypercolumn models ---
         checkpoint_path = os.path.join(checkpoint_dir, f"best_{model_name}.pth")
         if not os.path.exists(checkpoint_path):
             checkpoint_path = os.path.join(checkpoint_dir, f"{model_name}.pth")
@@ -1253,11 +1449,16 @@ def render_sidebar():
     )
     
     available_models = list(MODEL_CONFIGS.keys())
+    
+    # Default ensemble: maxvit, yolo, hypercolumn_cbam_densenet169, rad_dino
+    default_ensemble = ["maxvit", "yolo", "hypercolumn_cbam_densenet169", "rad_dino"]
+    default_selection = [m for m in default_ensemble if m in available_models]
+    
     selected_models = st.sidebar.multiselect(
         "Models to Load",
         options=available_models,
-        default=["swin"] if not st.session_state.models_loaded else available_models[:1],
-        help="Select models for ensemble inference"
+        default=default_selection,
+        help="Select models for ensemble inference. Primary ensemble: maxvit, yolo, hypercolumn_cbam_densenet169, rad_dino"
     )
     
     # Patient info
@@ -1274,7 +1475,7 @@ def render_sidebar():
     use_conformal = st.sidebar.checkbox("Enable conformal prediction", value=False,
                                         help="Include conformal prediction sets in outputs")
     conformal_threshold_path = st.sidebar.text_input(
-        "Threshold file (optional)", value="./conformal_threshold.txt",
+        "Threshold file (optional)", value="./outputs/conformal_threshold.txt",
         help="Path to a text file containing a single float threshold value (nonconformity t)."
     )
     conformal_threshold_value = st.sidebar.number_input(
@@ -1579,8 +1780,16 @@ def run_analysis(image: Image.Image, config: dict, device):
         return
     
     # Get primary model for single diagnosis
+    # Prefer a non-YOLO / non-RAD-DINO model as DiagnosticAgent primary because
+    # those have different inference pipelines that DiagnosticModule doesn't support.
     primary_model_name = list(models.keys())[0]
     primary_model = models[primary_model_name]
+    for _pname, _pmodel in models.items():
+        if not is_yolo_model(_pmodel) and not is_rad_dino_model(_pname):
+            primary_model_name = _pname
+            primary_model = _pmodel
+            break
+
     # Determine conformal threshold (file overrides manual value)
     conformal_threshold = None
     if config.get("use_conformal"):
@@ -1593,13 +1802,70 @@ def run_analysis(image: Image.Image, config: dict, device):
     
     # Agent 1: Diagnostic Agent
     with st.spinner("Running primary diagnosis..."):
-        diagnostic_agent = DiagnosticAgent(
-            class_names=CLASS_NAMES, 
-            model=primary_model, 
-            device=device, 
-            conformal_threshold=conformal_threshold
-        )
-        st.session_state.diagnosis_result = diagnostic_agent.diagnose(image)
+        if is_yolo_model(primary_model):
+            # YOLO has its own inference pipeline
+            probs = primary_model.predict_pil(image)
+            pred_idx = int(np.argmax(probs))
+            confidence = float(probs[pred_idx])
+            pred_class = _swap_prediction_label(CLASS_NAMES[pred_idx])
+            probs_np = probs.copy()
+            try:
+                if "Transverse" in CLASS_NAMES and "Transverse Displaced" in CLASS_NAMES:
+                    it, itd = CLASS_NAMES.index("Transverse"), CLASS_NAMES.index("Transverse Displaced")
+                    probs_np[it], probs_np[itd] = probs_np[itd], probs_np[it]
+                if "Oblique" in CLASS_NAMES and "Oblique Displaced" in CLASS_NAMES:
+                    io, iod = CLASS_NAMES.index("Oblique"), CLASS_NAMES.index("Oblique Displaced")
+                    probs_np[io], probs_np[iod] = probs_np[iod], probs_np[io]
+            except ValueError:
+                pass
+            st.session_state.diagnosis_result = {
+                "image_path": "in-memory-image",
+                "fracture_detected": pred_class != "Healthy",
+                "predicted_class": pred_class,
+                "severity_type": pred_class,
+                "confidence_score": confidence,
+                "uncertainty_score": 1.0 - confidence,
+                "all_probabilities": probs_np.tolist(),
+                "all_probabilities_dict": {_swap_prediction_label(CLASS_NAMES[i]): float(probs[i]) for i in range(len(probs))},
+            }
+        elif is_rad_dino_model(primary_model_name):
+            # RAD-DINO has its own preprocessing
+            rad_tensor = get_rad_dino_input_tensor(image, device)
+            with torch.no_grad():
+                logits = primary_model(rad_tensor)
+            probs_t = torch.softmax(logits, dim=1).squeeze(0)
+            probs = probs_t.cpu().numpy()
+            pred_idx = int(np.argmax(probs))
+            confidence = float(probs[pred_idx])
+            pred_class = _swap_prediction_label(CLASS_NAMES[pred_idx])
+            probs_np = probs.copy()
+            try:
+                if "Transverse" in CLASS_NAMES and "Transverse Displaced" in CLASS_NAMES:
+                    it, itd = CLASS_NAMES.index("Transverse"), CLASS_NAMES.index("Transverse Displaced")
+                    probs_np[it], probs_np[itd] = probs_np[itd], probs_np[it]
+                if "Oblique" in CLASS_NAMES and "Oblique Displaced" in CLASS_NAMES:
+                    io, iod = CLASS_NAMES.index("Oblique"), CLASS_NAMES.index("Oblique Displaced")
+                    probs_np[io], probs_np[iod] = probs_np[iod], probs_np[io]
+            except ValueError:
+                pass
+            st.session_state.diagnosis_result = {
+                "image_path": "in-memory-image",
+                "fracture_detected": pred_class != "Healthy",
+                "predicted_class": pred_class,
+                "severity_type": pred_class,
+                "confidence_score": confidence,
+                "uncertainty_score": 1.0 - confidence,
+                "all_probabilities": probs_np.tolist(),
+                "all_probabilities_dict": {_swap_prediction_label(CLASS_NAMES[i]): float(probs[i]) for i in range(len(probs))},
+            }
+        else:
+            diagnostic_agent = DiagnosticAgent(
+                class_names=CLASS_NAMES, 
+                model=primary_model, 
+                device=device, 
+                conformal_threshold=conformal_threshold
+            )
+            st.session_state.diagnosis_result = diagnostic_agent.diagnose(image)
     
     # Agent 2: Ensemble Agent
     if len(models) > 1:
@@ -1649,6 +1915,9 @@ def run_analysis(image: Image.Image, config: dict, device):
         # Generate per-model Grad-CAM visualizations (store as PIL images in session state)
         gradcam_images = {}
         for m_name, m_model in models.items():
+            # Skip YOLO and RAD-DINO – their architectures are incompatible with Grad-CAM
+            if is_yolo_model(m_model) or is_rad_dino_model(m_name):
+                continue
             try:
                 explain_agent = ExplainabilityAgent(m_model, CLASS_NAMES, device, body_part="bone")
                 pred_class = st.session_state.ensemble_result["ensemble_prediction"]
@@ -1676,7 +1945,13 @@ def run_analysis(image: Image.Image, config: dict, device):
             # convert PIL to numpy array for explanation heuristics
             primary_cam = np.array(gradcam_images[primary_model_name].convert('L')) / 255.0
 
-        explain_agent_primary = ExplainabilityAgent(primary_model, CLASS_NAMES, device, body_part="bone")
+        # Find a standard model for ExplainabilityAgent text generation (not YOLO/RAD-DINO)
+        explain_model = primary_model
+        for _ename, _emodel in models.items():
+            if not is_yolo_model(_emodel) and not is_rad_dino_model(_ename):
+                explain_model = _emodel
+                break
+        explain_agent_primary = ExplainabilityAgent(explain_model, CLASS_NAMES, device, body_part="bone")
         st.session_state.explanation_text = explain_agent_primary.generate_explanation(
             st.session_state.ensemble_result, primary_cam
         )
