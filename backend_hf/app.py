@@ -261,6 +261,17 @@ MODEL_CONFIGS = {
     "yolo": "yolo",
 }
 
+# Active models for ensemble inference (override via ACTIVE_MODELS env var)
+# Only these models are loaded at startup and used for inference / Grad-CAM.
+# Other checkpoints in ./models are treated as baselines and NOT loaded.
+ACTIVE_MODELS = [
+    m.strip()
+    for m in os.environ.get(
+        "ACTIVE_MODELS", "maxvit,yolo,hypercolumn_cbam_densenet169,rad_dino"
+    ).split(",")
+    if m.strip()
+]
+
 # RAD-DINO constants
 RAD_DINO_MODEL_NAME = "microsoft/rad-dino"
 
@@ -1057,10 +1068,15 @@ def load_models_startup():
         print("Models directory not found.")
         return
 
-    # 1. Load standard PyTorch/timm models (and hypercolumn)
+    print(f"Active models (set via ACTIVE_MODELS env): {ACTIVE_MODELS}")
+
+    # 1. Load standard PyTorch/timm models (and hypercolumn) — only if active
     for filename, config_name in MODEL_FILES.items():
         # RAD-DINO has its own loading path below
         if config_name == "rad_dino":
+            continue
+        # Skip models not in the active set
+        if config_name not in ACTIVE_MODELS:
             continue
         path = os.path.join(models_dir, filename)
         if os.path.exists(path):
@@ -1077,37 +1093,41 @@ def load_models_startup():
             except Exception as e:
                 print(f"Failed to load {filename}: {e}")
 
-    # 2. Load RAD-DINO model
-    rad_dino_path = os.path.join(models_dir, "best_rad_dino_classifier.pth")
-    if os.path.exists(rad_dino_path):
-        try:
-            checkpoint = torch.load(rad_dino_path, map_location=device)
-            s_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-            head_type = _detect_rad_dino_head_type(s_dict)
-            rad_model = RadDinoClassifier(NUM_CLASSES, head_type=head_type)
-            rad_model.load_state_dict(s_dict, strict=False)
-            rad_model.to(device)
-            rad_model.eval()
-            models["rad_dino"] = rad_model
-            print(f"Loaded rad_dino (head_type={head_type})")
-        except Exception as e:
-            print(f"Failed to load RAD-DINO: {e}")
-
-    # 3. Load YOLO model
-    for yp in YOLO_SEARCH_PATHS:
-        if os.path.exists(yp):
+    # 2. Load RAD-DINO model (only if active)
+    if "rad_dino" in ACTIVE_MODELS:
+        rad_dino_path = os.path.join(models_dir, "best_rad_dino_classifier.pth")
+        if os.path.exists(rad_dino_path):
             try:
-                from ultralytics import YOLO
-                yolo_raw = YOLO(yp)
-                wrapper = YOLOClassifierWrapper(yolo_raw, CLASS_NAMES)
-                models["yolo"] = wrapper
-                print(f"Loaded YOLO from {yp}")
-                break
-            except ImportError:
-                print("ultralytics not installed — skipping YOLO model")
-                break
+                checkpoint = torch.load(rad_dino_path, map_location=device)
+                s_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+                head_type = _detect_rad_dino_head_type(s_dict)
+                rad_model = RadDinoClassifier(NUM_CLASSES, head_type=head_type)
+                rad_model.load_state_dict(s_dict, strict=False)
+                rad_model.to(device)
+                rad_model.eval()
+                models["rad_dino"] = rad_model
+                print(f"Loaded rad_dino (head_type={head_type})")
             except Exception as e:
-                print(f"Failed to load YOLO from {yp}: {e}")
+                print(f"Failed to load RAD-DINO: {e}")
+        else:
+            print(f"RAD-DINO checkpoint not found at {rad_dino_path}")
+
+    # 3. Load YOLO model (only if active)
+    if "yolo" in ACTIVE_MODELS:
+        for yp in YOLO_SEARCH_PATHS:
+            if os.path.exists(yp):
+                try:
+                    from ultralytics import YOLO
+                    yolo_raw = YOLO(yp)
+                    wrapper = YOLOClassifierWrapper(yolo_raw, CLASS_NAMES)
+                    models["yolo"] = wrapper
+                    print(f"Loaded YOLO from {yp}")
+                    break
+                except ImportError:
+                    print("ultralytics not installed — skipping YOLO model")
+                    break
+                except Exception as e:
+                    print(f"Failed to load YOLO from {yp}: {e}")
 
     if models:
         # Backend uses explicit args matching EnsembleModule
