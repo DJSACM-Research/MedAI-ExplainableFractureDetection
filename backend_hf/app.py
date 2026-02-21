@@ -31,6 +31,20 @@ from io import BytesIO
 
 # Import Agents for Critic Flow (Loaded from self-contained module for cloud deployment)
 try:
+    from backend_hf.shared import IMAGE_STORE, CLASS_NAMES
+    # We will redefine CLASS_NAMES locally if import fails but ideally we use shared
+except ImportError:
+    try:
+        from shared import IMAGE_STORE, CLASS_NAMES
+    except ImportError:
+        # Fallback if shared module fails
+        IMAGE_STORE = {}
+        CLASS_NAMES = [
+            "Comminuted", "Greenstick", "Healthy", "Oblique", 
+            "Oblique Displaced", "Spiral", "Transverse", "Transverse Displaced"
+        ]
+
+try:
     from medai_agent_module import CriticAgent, evaluate_consensus
 except ImportError:
     logger.warning("medai_agent_module not found in local path. attempting Standard Import.")
@@ -46,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 # Global Image Store for Chat Agent (In-Memory for Demo)
 # In production, use Redis or S3/Blob storage
-IMAGE_STORE = {}
+# IMAGE_STORE = {} # Now from shared.py
 
 # Try optional imports
 try:
@@ -208,10 +222,13 @@ class HypercolumnCBAMDenseNet(nn.Module):
 # CONSTANTS & CONFIG
 # ============================================================================
 
-CLASS_NAMES = [
-    "Comminuted", "Greenstick", "Healthy", "Oblique", 
-    "Oblique Displaced", "Spiral", "Transverse", "Transverse Displaced"
-]
+# CLASS_NAMES imported from shared if available, else defined here as fallback
+
+if not CLASS_NAMES:
+    CLASS_NAMES = [
+        "Comminuted", "Greenstick", "Healthy", "Oblique", 
+        "Oblique Displaced", "Spiral", "Transverse", "Transverse Displaced"
+    ]
 NUM_CLASSES = len(CLASS_NAMES)
 IMG_SIZE = 224
 
@@ -912,6 +929,7 @@ def process_image(image_or_bytes,
     if len(IMAGE_STORE) > 100:
         IMAGE_STORE.clear() # Simple cleanup strategy for demo
     IMAGE_STORE[inference_id] = image.copy()
+    logger.info(f"Image stored for id {inference_id}. Total: {len(IMAGE_STORE)}")
 
     # 2. Per-model inference
     all_probs = []

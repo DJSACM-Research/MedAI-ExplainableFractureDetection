@@ -52,53 +52,6 @@ def search_medical_knowledge(query: str) -> str:
         return f"Error retrieving knowledge: {e}"
 
 @tool
-def consult_educational_agent(topic: str, inference_id: str = "") -> str:
-    """
-    Consult the Education Agent (MedGemma) to get an educational explanation 
-    of a medical topic.
-    CRITICAL: You must provide the 'inference_id' argument if you want to analyze a specific patient image.
-    If 'inference_id' is provided, it retrieves the patient's specific image 
-    to provide a visual explanation or answer questions about location/severity.
-    """
-    logger = logging.getLogger("EducationAgent")
-    logger.info(f"Education Agent called. Topic: '{topic}', Inference ID received: '{inference_id}'")
-    
-    try:
-        from backend_hf.medai_agent_module import MedGemmaClient
-        from backend_hf.app import IMAGE_STORE
-    except ImportError:
-        try:
-             from medai_agent_module import MedGemmaClient
-             from app import IMAGE_STORE
-        except ImportError:
-             return "Error: Modules not found."
-    
-    if not MedGemmaClient:
-        return "Error: Education Agent is not available."
-
-    try:
-        client = MedGemmaClient() # Uses env vars
-        
-        image = None
-        if inference_id and inference_id in IMAGE_STORE:
-            image = IMAGE_STORE[inference_id]
-            logger.info(f"Image retrieved successfully from store. Size: {image.size}")
-        else:
-             logger.warning(f"Image retrieval FAILED. Inference ID '{inference_id}' not found in IMAGE_STORE (Keys: {list(IMAGE_STORE.keys())})")
-        
-        if image:
-            # We have the specific image! Use MedGemma VLM capabilities.
-            prompt = f"Explain {topic} in the context of this X-ray image. Be educational."
-            response = client.predict(image, prompt)
-            return f"Education Agent (Visual Analysis): {response}"
-        else:
-            # Fallback to simulated or general knowledge
-            return f"Education Agent (General Text): I can explain '{topic}' generally, but I don't have access to your specific image right now. {topic} typically involves..."
-            
-    except Exception as e:
-        return f"Error in Education Agent: {e}"
-
-@tool
 def critique_diagnosis_logic(diagnosis: str, clinical_findings: str) -> str:
     """
     Ask the Critic Agent to review the logic of a diagnosis based on clinical findings.
@@ -149,14 +102,9 @@ def patient_interaction_agent(state: AgentState):
     
     You have access to the following specialized agents (tools):
     1. Knowledge Agent (search_medical_knowledge): For retrieving specific medical docs and guidelines.
-    2. Education Agent (consult_educational_agent): VITAL for visual questions. 
-       - REQUIRED ARGUMENT: `inference_id` (set to '{inference_id}' if available).
-       - REQUIRED ARGUMENT: `topic` (e.g., 'fracture location', 'severity').
-    3. Critic Agent (critique_diagnosis_logic): For Validating logic/consistency.
+    2. Critic Agent (critique_diagnosis_logic): For Validating logic/consistency.
     
     Decide whether to answer directly, or call a tool to get more information.
-    - If the user asks about LOCATION, VISUAL APPEARANCE, or specific details of THEIR injury, CALL consult_educational_agent.
-    - YOU MUST include the `inference_id` argument in the tool call if an Image ID is available above.
     
     Be empathetic, professional, but clarify you are an AI.
     """
@@ -170,28 +118,8 @@ def patient_interaction_agent(state: AgentState):
 
     llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, temperature=0.3)
     
-    # Bind tools
-    # IMPORTANT: We "curry" or bind the inference_id to the educational tool if available
-    # This prevents the LLM from having to remember to pass it, or passing it incorrectly.
-    # However, standard bind_tools support for partials is tricky with schemas.
-    # We will instead rely on a stronger prompt + tool definition that requires it if prompt says so.
-    
-    # STRATEGY 2: Dynamic Tool Definition
-    # We define the tool *inside* the node (or wrap it) so it closes over inference_id? 
-    # No, tools must be serializable for LangGraph/Smith typically.
-    
-    # STRATEGY 3: Explicit Prompt Engineering + Structured Output enforcement
-    # We will rely on the prompt but make the tool signature simple.
-    
-    tools = [search_medical_knowledge, consult_educational_agent, critique_diagnosis_logic]
+    tools = [search_medical_knowledge, critique_diagnosis_logic]
     llm_with_tools = llm.bind_tools(tools)
-    
-    # Inject inference_id into the tool call if the LLM tries to call it without it?
-    # No, that's complex interception.
-    
-    # Let's enforce it via System Prompt REPETITION.
-    if inference_id:
-        system_prompt += f"\n\nCRITICAL INSTRUCTION: When calling 'consult_educational_agent', YOU MUST INCLUDE the argument `inference_id='{inference_id}'`. Do not omit it."
     
     # Prepare messages
     # We must ensure SystemMessage is first
@@ -216,7 +144,7 @@ def create_patient_graph():
     workflow.add_node("agent", patient_interaction_agent)
     
     # Add ToolNode
-    tools = [search_medical_knowledge, consult_educational_agent, critique_diagnosis_logic]
+    tools = [search_medical_knowledge, critique_diagnosis_logic]
     tool_node = ToolNode(tools)
     workflow.add_node("tools", tool_node)
     

@@ -66,6 +66,9 @@ interface DiagnosisResponse {
     reason: string;
     critic_score: number;
   };
+  audit?: {
+    inference_id: string;
+  };
 }
 
 export default function DiagnosePage() {
@@ -182,6 +185,7 @@ export default function DiagnosePage() {
         conformal: payload.conformal || {},
         critic_review: payload.critic_review,
         consensus: payload.consensus,
+        audit: payload.audit || {},
       } as DiagnosisResponse;
 
       if (normalized.explanation.per_model_heatmaps) {
@@ -973,8 +977,10 @@ export default function DiagnosePage() {
                   </Card>
 
                   <ChatInterface
+                    key={result.audit?.inference_id || "chat-interface"}
                     context={result.knowledge_base}
                     medicalLight={medicalLight}
+                    inferenceId={result.audit?.inference_id}
                   />
                 </div>
               </>

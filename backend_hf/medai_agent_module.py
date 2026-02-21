@@ -7,10 +7,14 @@ import re
 from typing import Dict, Any, Optional, List, Union
 from PIL import Image
 try:
-    import torch
-    from transformers import pipeline
+    from backend_hf.shared import IMAGE_STORE
+    # from backend_hf.app import IMAGE_STORE # (Remove this later if it exists)
 except ImportError:
-    pass
+    try:
+        from shared import IMAGE_STORE
+    except ImportError:
+       pass
+
 
 # Configure logging
 logger = logging.getLogger(__name__)

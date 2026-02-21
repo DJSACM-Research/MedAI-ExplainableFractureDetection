@@ -24,9 +24,14 @@ interface ChatMessage {
 interface ChatInterfaceProps {
   context: any; // Knowledge Base context from API
   medicalLight?: boolean;
+  inferenceId?: string;
 }
 
-export function ChatInterface({ context, medicalLight }: ChatInterfaceProps) {
+export function ChatInterface({
+  context,
+  medicalLight,
+  inferenceId,
+}: ChatInterfaceProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
@@ -59,6 +64,7 @@ export function ChatInterface({ context, medicalLight }: ChatInterfaceProps) {
           context: context,
           history: messages.filter((m) => m.role !== "system"),
           user_data: userData,
+          inference_id: inferenceId,
         }),
       });
 
@@ -181,10 +187,10 @@ export function ChatInterface({ context, medicalLight }: ChatInterfaceProps) {
                     m.role === "user"
                       ? "bg-blue-600 text-white rounded-tr-none"
                       : m.role === "system"
-                      ? "bg-destructive/10 text-destructive border border-destructive/20 w-full text-center"
-                      : medicalLight
-                      ? "bg-white text-neutral-900 border border-neutral-200 rounded-tl-none"
-                      : "bg-neutral-800 text-neutral-100 border-neutral-700 rounded-tl-none"
+                        ? "bg-destructive/10 text-destructive border border-destructive/20 w-full text-center"
+                        : medicalLight
+                          ? "bg-white text-neutral-900 border border-neutral-200 rounded-tl-none"
+                          : "bg-neutral-800 text-neutral-100 border-neutral-700 rounded-tl-none"
                   }
                 `}
                 >
