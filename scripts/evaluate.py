@@ -315,6 +315,77 @@ class UnifiedFractureDataset(Dataset):
         legacy_tensor = self.legacy_transform(image)
         return {'pixel_values': pixel_values, 'legacy_tensor': legacy_tensor, 'label': torch.tensor(label, dtype=torch.long)}
 
+def evaluate_yolo_model(yolo_model_path, val_csv, root_dir="data"):
+    """Evaluate a YOLO classification model on the validation set.
+
+    Ground-truth class is derived from the image path's parent folder name so
+    that the integer label in the CSV (which may use a different ordering) never
+    causes a mismatch against the model's own class index.
+    """
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        logger.error("ultralytics not installed. Run: pip install ultralytics")
+        return None, None
+
+    model = YOLO(yolo_model_path)
+    task = getattr(model, 'task', 'detect')
+    logger.info(f"  YOLO task detected: {task}")
+
+    # Build a name→index mapping from the model's own class list
+    inv_names = {name: idx for idx, name in model.names.items()}
+
+    data = pd.read_csv(val_csv)
+    y_true, y_pred = [], []
+
+    for _, row in tqdm(data.iterrows(), total=len(data), desc="YOLO Eval", leave=False):
+        local_path = row['image_path']
+
+        # Resolve image path
+        full_path = local_path
+        if not os.path.isabs(full_path):
+            full_path = os.path.join(root_dir, local_path)
+        if not os.path.exists(full_path):
+            for candidate in [local_path, os.path.join("data", local_path)]:
+                if os.path.exists(candidate):
+                    full_path = candidate
+                    break
+
+        # Derive true class from folder name (robust to CSV label ordering)
+        folder_name = os.path.basename(os.path.dirname(local_path))
+        true_idx = inv_names.get(folder_name)
+        if true_idx is None:
+            # Try replacing spaces with underscores and vice-versa
+            true_idx = inv_names.get(folder_name.replace(' ', '_'))
+        if true_idx is None:
+            true_idx = inv_names.get(folder_name.replace('_', ' '))
+        if true_idx is None:
+            continue  # unknown class — skip
+
+        try:
+            results = model.predict(full_path, verbose=False)
+            result = results[0]
+            if task == 'classify':
+                pred_class = int(result.probs.top1)
+            else:
+                if result.boxes is not None and len(result.boxes) > 0:
+                    best_idx = int(result.boxes.conf.argmax())
+                    pred_class = int(result.boxes.cls[best_idx].item())
+                else:
+                    pred_class = 0
+        except Exception:
+            pred_class = -1  # will not match any true class
+
+        y_true.append(true_idx)
+        y_pred.append(pred_class)
+
+    if not y_true:
+        return 0.0, 0.0
+    acc = accuracy_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+    return acc, f1
+
+
 def evaluate_single_pass(model, loader, is_rad_dino=False):
     model.to(DEVICE)
     model.eval()
@@ -360,8 +431,28 @@ def main():
     model_files = glob.glob(os.path.join(MODELS_DIR, "*.pth"))
     outputs_files = glob.glob(os.path.join("outputs", "**", "best.pth"), recursive=True)
     model_files.extend(outputs_files)
-    
-    if not model_files:
+
+    # Collect YOLO .pt files: only include models whose class list matches the
+    # 8 fracture classes (skips pretrained ImageNet checkpoints).
+    _raw_yolo_files = glob.glob(os.path.join(MODELS_DIR, "*.pt"))
+    # Also pick up fine-tuned best/last checkpoints saved under outputs/
+    _raw_yolo_files += glob.glob(os.path.join("outputs", "**", "*.pt"), recursive=True)
+
+    _fracture_class_names = {c.replace(' ', '_') for c in CLASS_NAMES} | set(CLASS_NAMES)
+    yolo_files = []
+    for _pt in _raw_yolo_files:
+        try:
+            from ultralytics import YOLO as _YOLO
+            _m = _YOLO(_pt)
+            _model_classes = set(_m.names.values())
+            if len(_m.names) == 8 and _model_classes <= (_fracture_class_names | {c.replace('_', ' ') for c in _fracture_class_names}):
+                yolo_files.append(_pt)
+            else:
+                logger.info(f"  Skipping {os.path.basename(_pt)} (nc={len(_m.names)}, not a fracture classifier)")
+        except Exception:
+            pass  # unreadable or non-YOLO .pt — skip silently
+
+    if not model_files and not yolo_files:
         logger.error("No models found")
         return
 
@@ -435,6 +526,29 @@ def main():
             })
         else:
             logger.warning("  >> ALL FAILED")
+
+    # Evaluate YOLO (.pt) models
+    if yolo_files:
+        logger.info(f"Found {len(yolo_files)} YOLO model(s) to evaluate.")
+        for pt_path in yolo_files:
+            # Build a readable display name (e.g. outputs/.../best.pt → parent/best.pt)
+            rel = os.path.relpath(pt_path)
+            parts = rel.replace("\\", "/").split("/")
+            display_name = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+            logger.info(f"--- Evaluating YOLO: {display_name} ---")
+            acc, f1 = evaluate_yolo_model(pt_path, val_csv)
+            if acc is not None:
+                logger.info(f"  >> YOLO Acc: {acc:.4f}, F1 Macro: {f1:.4f}")
+                benchmark_results.append({
+                    "Model": display_name,
+                    "Accuracy": acc,
+                    "F1 Macro": f1,
+                    "Best Logic": "YOLO"
+                })
+            else:
+                logger.warning(f"  >> YOLO evaluation failed for {display_name}")
+    else:
+        logger.info("No fracture-class YOLO (.pt) models found.")
 
     if benchmark_results:
         df = pd.DataFrame(benchmark_results).sort_values(by="F1 Macro", ascending=False)

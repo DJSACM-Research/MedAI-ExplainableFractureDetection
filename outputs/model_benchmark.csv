@@ -1,5 +1,6 @@
 Model,Accuracy,F1 Macro,Best Logic
 best_maxvit.pth,0.9622641509433962,0.9660661918726434,Fixed
+weights/best.pt,0.9339622641509434,0.9381798996429287,YOLO
 best_hypercolumn_cbam_densenet169.pth,0.9339622641509434,0.9364632255124614,Original
 best_rad_dino_classifier.pth,0.9245283018867925,0.9311381573561774,RadDino
 best_swin.pth,0.9245283018867925,0.9310659706672637,Original
