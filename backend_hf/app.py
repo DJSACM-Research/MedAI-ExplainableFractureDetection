@@ -1466,116 +1466,429 @@ def _b64_to_pil(b64: str) -> Image.Image:
 
 
 def _make_pdf_report(payload: Dict[str, Any], original_image_bytes: bytes) -> BytesIO:
-    """Create a simple PDF report (as bytes) from the diagnosis payload."""
+    """Create a professional multi-page PDF report from the diagnosis payload."""
+    from matplotlib.patches import FancyBboxPatch, Rectangle
+    from textwrap import wrap
+    import matplotlib.patheffects as pe
+
     buf = BytesIO()
+
+    # ── Design Tokens (aligned with website dark-medical theme) ──────────
+    CLR_BG       = '#FFFFFF'
+    CLR_HEADER   = '#0f172a'   # slate-900
+    CLR_ACCENT   = '#2563eb'   # blue-600 (primary)
+    CLR_ACCENT_L = '#dbeafe'   # blue-100
+    CLR_TEXT     = '#1e293b'   # slate-800
+    CLR_TEXT_SEC = '#64748b'   # slate-500
+    CLR_RED      = '#ef4444'   # danger / fracture
+    CLR_GREEN    = '#22c55e'   # healthy
+    CLR_AMBER    = '#f59e0b'   # amber warning
+    CLR_BORDER   = '#e2e8f0'   # slate-200
+    CLR_CARD_BG  = '#f8fafc'   # slate-50
+    CLR_HEALTHY_BAR = '#22c55e'
+    CLR_FRACT_BAR   = '#ef4444'
+
+    FONT_FAMILY  = 'sans-serif'
+
+    # ── Extract all payload data ─────────────────────────────────────────
+    pred_data   = payload.get('prediction', {})
+    ensemble    = payload.get('ensemble', {})
+    explanation = payload.get('explanation', {})
+    edu         = payload.get('educational', {}) or {}
+    kb          = payload.get('knowledge_base', {}) or {}
+    conformal   = payload.get('conformal', {}) or {}
+    audit       = payload.get('audit', {}) or {}
+    metrics     = payload.get('metrics', {}) or {}
+
+    top_class      = pred_data.get('top_class') or ensemble.get('ensemble_prediction') or 'Unknown'
+    confidence     = pred_data.get('confidence_score') or ensemble.get('ensemble_confidence') or 0.0
+    fracture       = pred_data.get('fracture_detected', top_class != 'Healthy')
+    all_probs      = pred_data.get('all_probabilities') or ensemble.get('all_probabilities') or {}
+    indiv_preds    = pred_data.get('individual_model_predictions') or ensemble.get('individual_predictions') or {}
+
+    severity       = edu.get('severity_layman', '')
+    patient_summary = edu.get('patient_summary', '')
+    action_plan    = edu.get('next_steps_action_plan', '')
+
+    definition     = kb.get('definition', '')
+    icd_code       = kb.get('icd_code', '')
+    kb_severity    = kb.get('severity', '')
+    prognosis      = kb.get('prognosis', '')
+    guidelines     = kb.get('Treatment_Guidelines', []) or kb.get('treatment_guidelines', []) or []
+    gemini_text    = kb.get('gemini_explanation', '')
+
+    conf_enabled   = conformal.get('enabled', False)
+    conf_set       = conformal.get('conformal_set')
+    conf_threshold = conformal.get('conformal_threshold')
+
+    inference_id   = audit.get('inference_id', '')
+    timestamp      = audit.get('timestamp', '')
+    models_loaded  = audit.get('models_loaded', [])
+    margin         = metrics.get('top1_vs_top2_margin', None)
+
+    cam_b64 = explanation.get('heatmap_b64')
+
+    status_color = CLR_RED if fracture else CLR_GREEN
+    status_label = 'FRACTURE DETECTED' if fracture else 'HEALTHY'
+
     try:
-        # Improved report layout: header, two-column top (image + gradcam),
-        # probabilities as a clean horizontal bar chart, and a nicely formatted
-        # text summary with patient info and audit footer.
-        fig = plt.figure(figsize=(8.5, 11))
-        gs = fig.add_gridspec(10, 8, hspace=0.6, wspace=0.4)
+        # ═══════════════════════════════════════════════════════════════
+        #  PAGE 1: Primary Diagnosis Report
+        # ═══════════════════════════════════════════════════════════════
+        from matplotlib.backends.backend_pdf import PdfPages
+        import matplotlib.colors as mcolors
+        pdf = PdfPages(buf)
 
-        # Header
-        fig.suptitle('MedAI Fracture Diagnosis Report', fontsize=18, fontweight='bold')
+        fig = plt.figure(figsize=(8.5, 11), facecolor=CLR_BG, dpi=150)
 
-        # Left: Original image (taller)
-        ax_img = fig.add_subplot(gs[0:6, 0:4])
+        # Helper: draw rounded rectangle card on figure
+        def draw_card(target, x, y, w, h, fill=CLR_CARD_BG, edge=CLR_BORDER, lw=0.8, radius=0.008):
+            box = FancyBboxPatch((x, y), w, h,
+                                 boxstyle=f"round,pad=0,rounding_size={radius}",
+                                 facecolor=fill, edgecolor=edge, linewidth=lw,
+                                 transform=target.transFigure, clip_on=False)
+            target.patches.append(box)
+
+        # Helper: wrap text to fit width
+        def wrap_text(text, width=90):
+            lines = []
+            for paragraph in text.split('\n'):
+                if paragraph.strip() == '':
+                    lines.append('')
+                else:
+                    lines.extend(wrap(paragraph, width=width))
+            return '\n'.join(lines)
+
+        # ── Collect page 1 vs page 2 content ─────────────────────────
+        # Model ensemble and action plan move to page 2 if we have too
+        # much content (conformal + guidelines + summary + models).
+        # We treat guidelines and action plan as potentially redundant.
+        # If action plan items duplicate guidelines, skip the action plan.
+        show_action_plan = bool(action_plan)
+        if guidelines and action_plan:
+            # Check if action plan is just a repeat of guidelines
+            plan_lines_raw = [l.lstrip('0123456789. ').strip() for l in action_plan.split('\n')
+                              if l.strip() and not l.strip().startswith('Recommended')]
+            if set(plan_lines_raw) <= set(g.strip() for g in guidelines):
+                show_action_plan = False
+
+        # ── A. Header Bar ────────────────────────────────────────────
+        header_rect = Rectangle((0, 0.930), 1, 0.070, transform=fig.transFigure,
+                                facecolor=CLR_HEADER, edgecolor='none', clip_on=False)
+        fig.patches.append(header_rect)
+        accent_stripe = Rectangle((0, 0.927), 1, 0.003, transform=fig.transFigure,
+                                  facecolor=CLR_ACCENT, edgecolor='none', clip_on=False)
+        fig.patches.append(accent_stripe)
+
+        fig.text(0.05, 0.968, '◈  MedAI', fontsize=18, fontweight='bold',
+                 color='white', fontfamily=FONT_FAMILY, va='center')
+        fig.text(0.05, 0.943, 'Fracture Diagnosis Report',
+                 fontsize=9, color='#93c5fd', fontfamily=FONT_FAMILY, va='center')
+        report_id_display = f'{inference_id[:13]}…' if len(inference_id) > 13 else inference_id
+        fig.text(0.95, 0.965, f'ID: {report_id_display}',
+                 fontsize=6, color='#94a3b8', fontfamily=FONT_FAMILY, va='center', ha='right')
+        fig.text(0.95, 0.943, f'{timestamp[:19].replace("T", " ")}',
+                 fontsize=6, color='#94a3b8', fontfamily=FONT_FAMILY, va='center', ha='right')
+
+        # ── B. Diagnosis Banner (2-row layout to avoid text collision) ─
+        banner_top = 0.910
+        banner_h = 0.050
+        status_rgba = mcolors.to_rgba(status_color, alpha=0.08)
+        draw_card(fig, 0.04, banner_top - banner_h, 0.92, banner_h,
+                  fill=status_rgba, edge=status_color, lw=1.2)
+
+        # Row 1: status label left, confidence right
+        fig.text(0.06, banner_top - 0.014, '●  ' + status_label, fontsize=11, fontweight='bold',
+                 color=status_color, fontfamily=FONT_FAMILY, va='center')
+        fig.text(0.92, banner_top - 0.014, f'{confidence*100:.1f}%', fontsize=13,
+                 fontweight='bold', color=status_color, fontfamily=FONT_FAMILY, va='center', ha='right')
+        # Row 2: diagnosis class left, confidence label right
+        fig.text(0.08, banner_top - 0.036, f'Diagnosis:  {top_class}', fontsize=9,
+                 color=CLR_TEXT, fontfamily=FONT_FAMILY, va='center')
+        fig.text(0.92, banner_top - 0.036, 'confidence', fontsize=6,
+                 color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, va='center', ha='right')
+
+        # ── C. X-ray Images ──────────────────────────────────────────
+        img_top = 0.845
+        img_h = 0.225
+        fig.text(0.05, img_top + 0.008, 'Imaging Analysis', fontsize=10, fontweight='bold',
+                 color=CLR_TEXT, fontfamily=FONT_FAMILY)
+
+        ax_img = fig.add_axes([0.05, img_top - img_h, 0.42, img_h])
         img = Image.open(BytesIO(original_image_bytes)).convert('RGB')
         ax_img.imshow(img)
         ax_img.axis('off')
-        ax_img.set_title('Original X-ray', fontsize=10)
+        fig.text(0.26, img_top - img_h - 0.012, 'Original X-ray', fontsize=7,
+                 color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, ha='center')
 
-        # Right: Grad-CAM (if available) with subtle border
-        ax_cam = fig.add_subplot(gs[0:6, 4:8])
-        cam_b64 = payload.get('explanation', {}).get('heatmap_b64')
+        ax_cam = fig.add_axes([0.53, img_top - img_h, 0.42, img_h])
         if cam_b64:
             cam_img = _b64_to_pil(cam_b64)
             if cam_img:
                 ax_cam.imshow(cam_img)
+            else:
+                ax_cam.text(0.5, 0.5, 'Grad-CAM unavailable', ha='center', va='center',
+                            fontsize=8, color=CLR_TEXT_SEC)
+                ax_cam.set_facecolor(CLR_CARD_BG)
         else:
-            # show a small placeholder text
-            ax_cam.text(0.5, 0.5, 'No Grad-CAM available', ha='center', va='center', fontsize=10, color='gray')
+            ax_cam.text(0.5, 0.5, 'Grad-CAM unavailable', ha='center', va='center',
+                        fontsize=8, color=CLR_TEXT_SEC)
+            ax_cam.set_facecolor(CLR_CARD_BG)
         ax_cam.axis('off')
-        ax_cam.set_title('AI Explanation (Grad-CAM)', fontsize=10)
+        fig.text(0.74, img_top - img_h - 0.012, 'AI Explanation (Grad-CAM)', fontsize=7,
+                 color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, ha='center')
 
-        # Probabilities: horizontal bar chart (clean, percentage labels)
-        ax_bar = fig.add_subplot(gs[6:9, 0:6])
-        probs = payload.get('prediction', {}).get('all_probabilities') or payload.get('ensemble', {}).get('all_probabilities') or {}
-        if probs:
-            labels = list(probs.keys())
-            vals = [probs[k] for k in labels]
-            # sort by descending probability for readability
-            pairs = sorted(zip(labels, vals), key=lambda x: x[1])
-            labels_sorted, vals_sorted = zip(*pairs)
-            y = range(len(labels_sorted))
-            ax_bar.barh(y, [v * 100 for v in vals_sorted], color='#e11d48')
-            ax_bar.set_yticks(y)
-            ax_bar.set_yticklabels(labels_sorted)
-            ax_bar.set_xlabel('Probability (%)')
-            # annotate percentages on bars
+        # ── D. Diagnosis Details (left) + Probability Chart (right) ──
+        section_top = img_top - img_h - 0.030
+        fig.text(0.05, section_top, 'Diagnosis Details', fontsize=10, fontweight='bold',
+                 color=CLR_TEXT, fontfamily=FONT_FAMILY)
+
+        chart_h = 0.155
+        chart_top = section_top - 0.012
+
+        # Left: compact info card
+        info_card_h = chart_h
+        draw_card(fig, 0.04, chart_top - info_card_h, 0.42, info_card_h, fill=CLR_CARD_BG)
+        info_y = chart_top - 0.010
+        info_items = []
+        if definition:
+            # Truncate long definitions for the compact card
+            short_def = definition[:80] + '…' if len(definition) > 80 else definition
+            info_items.append(('Definition', short_def))
+        if icd_code:
+            info_items.append(('ICD Code', icd_code))
+        if severity:
+            sev_short = severity.split('(')[0].strip() if '(' in severity else severity
+            info_items.append(('Severity', sev_short))
+        elif kb_severity:
+            info_items.append(('Severity', kb_severity))
+        if prognosis:
+            short_prog = prognosis[:70] + '…' if len(prognosis) > 70 else prognosis
+            info_items.append(('Prognosis', short_prog))
+        if margin is not None:
+            info_items.append(('Margin', f'{margin*100:.1f}% over 2nd class'))
+
+        for label, value in info_items:
+            fig.text(0.06, info_y, f'{label}:', fontsize=6.5, fontweight='bold',
+                     color=CLR_TEXT, fontfamily=FONT_FAMILY, va='top')
+            wrapped_val = wrap_text(str(value), width=45)
+            n_lines = len(wrapped_val.split('\n'))
+            fig.text(0.06, info_y - 0.011, wrapped_val, fontsize=6, color=CLR_TEXT_SEC,
+                     fontfamily=FONT_FAMILY, va='top', linespacing=1.2)
+            info_y -= 0.012 + (n_lines * 0.011)
+
+        # Right: probability bar chart
+        ax_bar = fig.add_axes([0.55, chart_top - chart_h, 0.38, chart_h])
+        if all_probs:
+            pairs = sorted(all_probs.items(), key=lambda x: x[1])
+            labels_sorted = [p[0] for p in pairs]
+            vals_sorted   = [p[1] for p in pairs]
+            y_pos = range(len(labels_sorted))
+            bar_colors_final = []
+            for l, v in zip(labels_sorted, vals_sorted):
+                if l == top_class:
+                    bar_colors_final.append(CLR_HEALTHY_BAR if l == 'Healthy' else CLR_ACCENT)
+                elif l == 'Healthy':
+                    bar_colors_final.append(mcolors.to_rgba(CLR_HEALTHY_BAR, alpha=0.4))
+                else:
+                    bar_colors_final.append('#fda4af')
+            ax_bar.barh(list(y_pos), [v * 100 for v in vals_sorted],
+                        color=bar_colors_final, height=0.65, edgecolor='none')
+            ax_bar.set_yticks(list(y_pos))
+            ax_bar.set_yticklabels(labels_sorted, fontsize=5.5, color=CLR_TEXT)
+            ax_bar.set_xlabel('Probability (%)', fontsize=6, color=CLR_TEXT_SEC, labelpad=2)
+            ax_bar.tick_params(axis='x', labelsize=5, colors=CLR_TEXT_SEC)
+            ax_bar.spines['top'].set_visible(False)
+            ax_bar.spines['right'].set_visible(False)
+            ax_bar.spines['left'].set_color(CLR_BORDER)
+            ax_bar.spines['bottom'].set_color(CLR_BORDER)
             for i, v in enumerate(vals_sorted):
-                ax_bar.text(v * 100 + 1, i, f'{v*100:.1f}%', va='center', fontsize=8)
+                ax_bar.text(v * 100 + 0.5, i, f'{v*100:.1f}%', va='center',
+                            fontsize=5, color=CLR_TEXT_SEC)
+            ax_bar.set_title('Class Probabilities', fontsize=7, fontweight='bold',
+                             color=CLR_TEXT, pad=4)
         else:
-            ax_bar.text(0.5, 0.5, 'No probability data', ha='center', va='center', fontsize=10, color='gray')
-        ax_bar.set_title('Class Probabilities', fontsize=10)
+            ax_bar.text(0.5, 0.5, 'No probability data', ha='center', va='center',
+                        fontsize=8, color=CLR_TEXT_SEC)
+            ax_bar.axis('off')
 
-        # Right column: top-1 summary + small reliability metric if present
-        ax_meta = fig.add_subplot(gs[6:9, 6:8])
-        ax_meta.axis('off')
-        pred = payload.get('prediction', {}).get('top_class') or payload.get('ensemble', {}).get('ensemble_prediction') or ''
-        conf = payload.get('prediction', {}).get('confidence_score') or payload.get('ensemble', {}).get('ensemble_confidence') or 0.0
-        lines = [f'Diagnosis: {pred}', f'Confidence: {conf*100:.1f}%']
-        conformal = payload.get('conformal', {})
-        if conformal.get('enabled'):
-            cs = conformal.get('conformal_set')
-            thr = conformal.get('conformal_threshold')
-            lines.append('')
-            lines.append('Conformal Prediction:')
-            lines.append(f'  Set: {cs}')
-            lines.append(f'  Threshold: {thr}')
+        # ── Track vertical cursor for remaining sections ─────────────
+        FOOTER_TOP = 0.050    # Footer occupies y=[0, 0.050]
+        next_y = chart_top - chart_h - 0.020
 
-        # small reliability / brier if available
-        if payload.get('metrics') and payload.get('metrics').get('brier_score'):
-            lines.append('')
-            lines.append(f"Brier score: {payload.get('metrics').get('brier_score'):.4f}")
+        # ── E. Conformal Prediction (if enabled) ────────────────────
+        if conf_enabled and (conf_set or conf_threshold):
+            conf_h = 0.028
+            draw_card(fig, 0.04, next_y - conf_h, 0.92, conf_h,
+                      fill='#fef3c7', edge=CLR_AMBER, lw=0.8)
+            fig.text(0.06, next_y - conf_h / 2, '⚠  Conformal Prediction', fontsize=7,
+                     fontweight='bold', color='#92400e', fontfamily=FONT_FAMILY, va='center')
+            conf_parts = []
+            if conf_set:
+                conf_parts.append(f'Set: {", ".join(conf_set) if isinstance(conf_set, list) else str(conf_set)}')
+            if conf_threshold:
+                conf_parts.append(f'Threshold: {conf_threshold}')
+            fig.text(0.55, next_y - conf_h / 2, '  |  '.join(conf_parts), fontsize=6.5,
+                     color='#78350f', fontfamily=FONT_FAMILY, va='center', ha='center')
+            next_y -= conf_h + 0.010
 
-        # Educational / patient summary
-        edu = payload.get('educational', {}) or {}
-        patient_summary = edu.get('patient_summary', '')
+        # ── F. Patient Summary ───────────────────────────────────────
+        if patient_summary and next_y - 0.060 > FOOTER_TOP:
+            fig.text(0.05, next_y, 'Patient Summary', fontsize=9, fontweight='bold',
+                     color=CLR_TEXT, fontfamily=FONT_FAMILY)
+            next_y -= 0.006
+            clean_summary = patient_summary.replace('**', '')
+            wrapped_summary = wrap_text(clean_summary, width=105)
+            n_sum_lines = len(wrapped_summary.split('\n'))
+            card_h = max(0.035, n_sum_lines * 0.011 + 0.012)
+            draw_card(fig, 0.04, next_y - card_h, 0.92, card_h,
+                      fill='#eff6ff', edge='#bfdbfe', lw=0.8)
+            fig.text(0.06, next_y - 0.008, wrapped_summary, fontsize=6.5, color=CLR_TEXT,
+                     fontfamily=FONT_FAMILY, va='top', linespacing=1.3)
+            next_y -= card_h + 0.012
 
-        txt_meta = '\n'.join(lines)
-        ax_meta.text(0, 1, txt_meta, va='top', fontsize=10)
+        # ── G. Treatment Guidelines ──────────────────────────────────
+        if guidelines and next_y - 0.040 > FOOTER_TOP:
+            fig.text(0.05, next_y, 'Treatment Guidelines', fontsize=9, fontweight='bold',
+                     color=CLR_TEXT, fontfamily=FONT_FAMILY)
+            next_y -= 0.006
+            card_h = len(guidelines) * 0.013 + 0.012
+            draw_card(fig, 0.04, next_y - card_h, 0.92, card_h, fill=CLR_CARD_BG)
+            for i, g in enumerate(guidelines):
+                bullet_y = next_y - 0.010 - (i * 0.013)
+                fig.text(0.06, bullet_y, '•', fontsize=7, color=CLR_ACCENT,
+                         fontfamily=FONT_FAMILY, va='center')
+                fig.text(0.075, bullet_y, g, fontsize=6.5, color=CLR_TEXT,
+                         fontfamily=FONT_FAMILY, va='center')
+            next_y -= card_h + 0.012
 
-        # Full-width patient summary at bottom
-        ax_text = fig.add_subplot(gs[9:, 0:8])
-        ax_text.axis('off')
-        summary_lines = []
-        if patient_summary:
-            summary_lines.append('Patient Summary:')
-            summary_lines.append(patient_summary)
-        kb = payload.get('knowledge_base', {}) or {}
-        guidelines = kb.get('Treatment_Guidelines', []) or kb.get('treatment_guidelines', []) or []
-        if guidelines:
-            summary_lines.append('')
-            summary_lines.append('Treatment Guidelines:')
-            for g in guidelines:
-                summary_lines.append(f'- {g}')
+        # ── H. Recommended Actions (only if not duplicate of guidelines) ─
+        if show_action_plan and next_y - 0.040 > FOOTER_TOP:
+            fig.text(0.05, next_y, 'Recommended Actions', fontsize=9, fontweight='bold',
+                     color=CLR_TEXT, fontfamily=FONT_FAMILY)
+            next_y -= 0.006
+            plan_lines = [l for l in action_plan.split('\n')
+                          if l.strip() and not l.strip().startswith('Recommended')]
+            card_h = len(plan_lines) * 0.013 + 0.012
+            draw_card(fig, 0.04, next_y - card_h, 0.92, card_h, fill=CLR_CARD_BG)
+            for i, line in enumerate(plan_lines):
+                line_y = next_y - 0.010 - (i * 0.013)
+                fig.text(0.06, line_y, '→', fontsize=6, color=CLR_ACCENT,
+                         fontfamily=FONT_FAMILY, va='center')
+                fig.text(0.075, line_y, line.lstrip('0123456789. '), fontsize=6.5,
+                         color=CLR_TEXT, fontfamily=FONT_FAMILY, va='center')
+            next_y -= card_h + 0.012
 
-        # Footer / audit info
-        audit = payload.get('audit', {}) or {}
-        inference_id = audit.get('inference_id') or ''
-        timestamp = audit.get('timestamp') or ''
+        # ── I. Model Ensemble Summary ────────────────────────────────
+        if indiv_preds and next_y - 0.040 > FOOTER_TOP:
+            fig.text(0.05, next_y, 'Model Ensemble Breakdown', fontsize=9, fontweight='bold',
+                     color=CLR_TEXT, fontfamily=FONT_FAMILY)
+            next_y -= 0.006
+            n_models = len(indiv_preds)
+            row_h = 0.013
+            card_h = n_models * row_h + 0.020
+            # Check if it fits; if not, truncate to fit
+            avail = next_y - FOOTER_TOP - 0.010
+            if card_h > avail:
+                n_show = max(1, int((avail - 0.020) / row_h))
+                card_h = n_show * row_h + 0.020
+            else:
+                n_show = n_models
+            draw_card(fig, 0.04, next_y - card_h, 0.92, card_h, fill=CLR_CARD_BG)
+            # Column headers
+            fig.text(0.06, next_y - 0.009, 'Model', fontsize=5.5, fontweight='bold',
+                     color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, va='center')
+            fig.text(0.48, next_y - 0.009, 'Prediction', fontsize=5.5, fontweight='bold',
+                     color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, va='center', ha='center')
+            fig.text(0.88, next_y - 0.009, 'Confidence', fontsize=5.5, fontweight='bold',
+                     color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, va='center', ha='right')
+            for i, (mname, mdata) in enumerate(list(indiv_preds.items())[:n_show]):
+                row_y = next_y - 0.020 - (i * row_h)
+                display_name = mname.replace('_', ' ').replace('best ', '').title()
+                m_class = mdata.get('class', '?')
+                m_conf  = mdata.get('confidence', 0)
+                fig.text(0.06, row_y, display_name, fontsize=6, color=CLR_TEXT,
+                         fontfamily=FONT_FAMILY, va='center')
+                fig.text(0.48, row_y, m_class, fontsize=6, color=CLR_TEXT,
+                         fontfamily=FONT_FAMILY, va='center', ha='center')
+                conf_color = CLR_GREEN if m_conf > 0.7 else (CLR_AMBER if m_conf > 0.4 else CLR_RED)
+                fig.text(0.88, row_y, f'{m_conf*100:.1f}%', fontsize=6, fontweight='bold',
+                         color=conf_color, fontfamily=FONT_FAMILY, va='center', ha='right')
 
-        if summary_lines:
-            txt_summary = '\n'.join(summary_lines)
-            ax_text.text(0, 1, txt_summary, va='top', fontsize=9)
-        # footer small
-        footer = f"Report generated: {timestamp}    Inference ID: {inference_id}"
-        fig.text(0.5, 0.02, footer, ha='center', fontsize=8, color='gray')
+        # ── J. Footer ────────────────────────────────────────────────
+        footer_rect = Rectangle((0, 0), 1, FOOTER_TOP, transform=fig.transFigure,
+                                facecolor=CLR_HEADER, edgecolor='none', clip_on=False)
+        fig.patches.append(footer_rect)
+        footer_stripe = Rectangle((0, FOOTER_TOP), 1, 0.002, transform=fig.transFigure,
+                                  facecolor=CLR_ACCENT, edgecolor='none', clip_on=False)
+        fig.patches.append(footer_stripe)
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        fig.savefig(buf, format='pdf')
+        fig.text(0.05, 0.030, '◈ MedAI Research  •  DJSCE-ACM Team',
+                 fontsize=6, color='#94a3b8', fontfamily=FONT_FAMILY, va='center')
+        fig.text(0.95, 0.030,
+                 'AI-assisted analysis — not a substitute for professional medical advice',
+                 fontsize=5.5, color='#64748b', fontfamily=FONT_FAMILY, va='center', ha='right')
+        fig.text(0.50, 0.012, f'Inference ID: {inference_id}',
+                 fontsize=5, color='#475569', fontfamily=FONT_FAMILY, va='center', ha='center')
+
+        pdf.savefig(fig, facecolor=CLR_BG)
         plt.close(fig)
+
+        # ═══════════════════════════════════════════════════════════════
+        #  PAGE 2: AI Explanation (only if Gemini text available)
+        # ═══════════════════════════════════════════════════════════════
+        if gemini_text:
+            fig2 = plt.figure(figsize=(8.5, 11), facecolor=CLR_BG, dpi=150)
+            fig2.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+            # Header (same style, page 2)
+            h2 = Rectangle((0, 0.925), 1, 0.075, transform=fig2.transFigure,
+                            facecolor=CLR_HEADER, edgecolor='none', clip_on=False)
+            fig2.patches.append(h2)
+            s2 = Rectangle((0, 0.922), 1, 0.004, transform=fig2.transFigure,
+                            facecolor=CLR_ACCENT, edgecolor='none', clip_on=False)
+            fig2.patches.append(s2)
+
+            fig2.text(0.05, 0.962, '◈  MedAI', fontsize=20, fontweight='bold',
+                      color='white', fontfamily=FONT_FAMILY, va='center')
+            fig2.text(0.05, 0.940, 'AI-Generated Medical Explanation',
+                      fontsize=11, color='#93c5fd', fontfamily=FONT_FAMILY, va='center')
+            fig2.text(0.95, 0.955, 'Page 2 of 2', fontsize=7, color='#94a3b8',
+                      fontfamily=FONT_FAMILY, va='center', ha='right')
+
+            # Gemini explanation content
+            fig2.text(0.05, 0.900, 'Gemini AI Explanation', fontsize=13, fontweight='bold',
+                      color=CLR_TEXT, fontfamily=FONT_FAMILY)
+            fig2.text(0.05, 0.886, f'Diagnosis: {top_class}  •  Powered by Gemini',
+                      fontsize=8, color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY)
+
+            # Clean and wrap the gemini text
+            clean_gemini = gemini_text.replace('**', '').replace('###', '').replace('##', '').replace('#', '')
+            wrapped_gemini = wrap_text(clean_gemini, width=105)
+            # Limit to fit page
+            gemini_lines = wrapped_gemini.split('\n')[:55]
+
+            draw_card(fig2, 0.04, 0.06, 0.92, 0.815, fill='#eef2ff', edge='#c7d2fe', lw=0.8)
+            fig2.text(0.06, 0.860, '\n'.join(gemini_lines), fontsize=7, color=CLR_TEXT,
+                      fontfamily=FONT_FAMILY, va='top', linespacing=1.5)
+
+            # Page 2 footer
+            f2 = Rectangle((0, 0), 1, 0.040, transform=fig2.transFigure,
+                            facecolor=CLR_HEADER, edgecolor='none', clip_on=False)
+            fig2.patches.append(f2)
+            fs2 = Rectangle((0, 0.040), 1, 0.002, transform=fig2.transFigure,
+                             facecolor=CLR_ACCENT, edgecolor='none', clip_on=False)
+            fig2.patches.append(fs2)
+            fig2.text(0.05, 0.025, '◈ MedAI Research  •  DJSCE-ACM Team',
+                     fontsize=7, color='#94a3b8', fontfamily=FONT_FAMILY, va='center')
+            fig2.text(0.95, 0.025,
+                     'AI-assisted analysis — not a substitute for professional medical advice',
+                     fontsize=6, color='#64748b', fontfamily=FONT_FAMILY, va='center', ha='right')
+
+            pdf.savefig(fig2, facecolor=CLR_BG)
+            plt.close(fig2)
+
+        pdf.close()
         buf.seek(0)
         return buf
     except Exception as e:
