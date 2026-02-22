@@ -6,6 +6,8 @@ __pycache__/
 # C extensions
 *.so
 
+outputs/inference_logs
+
 balanced_augmented_dataset/
 
 # Secrets (DO NOT commit real API keys)

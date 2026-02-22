@@ -1,6 +1,27 @@
 import os
 from dotenv import load_dotenv
 import sys
+import multiprocessing
+# Prevent leaked-semaphore warning on macOS when SentenceTransformer / tokenizers
+# fork background processes.  Must be called before any other multiprocessing use.
+try:
+    multiprocessing.set_start_method("spawn", force=True)
+except RuntimeError:
+    pass  # already set
+
+# Clean up any leaked semaphores at interpreter exit so the resource-tracker
+# doesn't emit a noisy warning on Ctrl-C.
+import atexit, multiprocessing.resource_tracker as _rt
+
+def _cleanup_semaphores():
+    """Silence 'leaked semaphore' warnings at shutdown."""
+    try:
+        _rt._resource_tracker._stop = None  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+atexit.register(_cleanup_semaphores)
+
 # Add src to path for imports - handles both local (../src) and container/HF (./src) structures
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(current_dir, '../src')) # Local: src is sibling
@@ -28,6 +49,7 @@ from datetime import datetime
 from fastapi.responses import StreamingResponse, JSONResponse
 import matplotlib.pyplot as plt
 from io import BytesIO
+import cv2
 
 # Import Agents for Critic Flow (Loaded from self-contained module for cloud deployment)
 try:
@@ -562,6 +584,126 @@ def is_yolo_model(model) -> bool:
     """Check if a model is a YOLO wrapper."""
     return isinstance(model, YOLOClassifierWrapper)
 
+
+# ============================================================================
+# ALTERNATIVE VISUALIZATIONS FOR NON-GRAD-CAM MODELS
+# ============================================================================
+
+def generate_attention_rollout(model: RadDinoClassifier, image: Image.Image, device) -> Optional[np.ndarray]:
+    """Generate an attention rollout map from a RAD-DINO (ViT) model.
+    
+    Extracts self-attention from every layer and multiplies them together
+    to produce a single spatial attention map (attention rollout).
+    Returns a 2D numpy array (H, W) normalised to [0, 1], or None on failure.
+    """
+    try:
+        processor = get_rad_dino_processor()
+        if processor is None:
+            return None
+        inputs = processor(images=image, return_tensors="pt")
+        pixel_values = inputs['pixel_values'].to(device)
+
+        model.eval()
+        with torch.no_grad():
+            outputs = model.backbone(pixel_values=pixel_values, output_attentions=True)
+
+        attentions = outputs.attentions  # tuple of (1, num_heads, seq_len, seq_len)
+        if not attentions:
+            return None
+
+        # Average across heads, then rollout across layers
+        result = torch.eye(attentions[0].size(-1)).to(device)
+        for attn in attentions:
+            # attn shape: (1, num_heads, seq_len, seq_len)
+            attn_heads_avg = attn.mean(dim=1).squeeze(0)  # (seq_len, seq_len)
+            # Add identity for residual connection
+            attn_heads_avg = 0.5 * attn_heads_avg + 0.5 * torch.eye(attn_heads_avg.size(0)).to(device)
+            # Normalise rows
+            attn_heads_avg = attn_heads_avg / attn_heads_avg.sum(dim=-1, keepdim=True)
+            result = torch.matmul(attn_heads_avg, result)
+
+        # Extract CLS token attention to patch tokens
+        cls_attention = result[0, 1:]  # skip CLS token itself
+
+        # Reshape to spatial grid
+        num_patches = cls_attention.size(0)
+        grid_size = int(num_patches ** 0.5)
+        if grid_size * grid_size != num_patches:
+            return None
+
+        attn_map = cls_attention.reshape(grid_size, grid_size).cpu().numpy()
+
+        # Resize to standard visualisation size
+        from PIL import ImageFilter
+        attn_img = Image.fromarray((attn_map * 255).astype(np.uint8)).resize((224, 224), Image.BILINEAR)
+        attn_map_resized = np.array(attn_img).astype(np.float32) / 255.0
+
+        # Normalise to [0, 1]
+        attn_min = attn_map_resized.min()
+        attn_max = attn_map_resized.max()
+        if attn_max - attn_min > 1e-8:
+            attn_map_resized = (attn_map_resized - attn_min) / (attn_max - attn_min)
+        return attn_map_resized
+    except Exception as e:
+        logger.warning(f"Attention rollout failed for RAD-DINO: {e}")
+        return None
+
+
+def generate_yolo_saliency(model: YOLOClassifierWrapper, image: Image.Image, device) -> Optional[np.ndarray]:
+    """Generate an input-gradient saliency map for a YOLO classification model.
+    
+    Uses vanilla gradient of the predicted logit w.r.t. the input image.
+    Returns a 2D numpy array (H, W) normalised to [0, 1], or None on failure.
+    """
+    try:
+        yolo_model = model.yolo_model
+        # YOLO classify models expose a .model attribute with the torch module
+        torch_model = getattr(yolo_model, 'model', None)
+        if torch_model is None:
+            return None
+
+        # Prepare image tensor (YOLO expects 224x224 typically for classify)
+        from torchvision import transforms as T
+        img_resized = image.resize((224, 224))
+        to_tensor = T.Compose([T.ToTensor(), T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+        input_tensor = to_tensor(img_resized).unsqueeze(0).to(device)
+        input_tensor.requires_grad_(True)
+
+        torch_model.eval()
+        output = torch_model(input_tensor)
+
+        # Handle different YOLO output shapes
+        if isinstance(output, (list, tuple)):
+            output = output[0]
+
+        pred_idx = output.argmax(dim=-1).item()
+        score = output[0, pred_idx]
+        score.backward()
+
+        grad = input_tensor.grad.data.abs().squeeze(0)  # (3, H, W)
+        saliency = grad.max(dim=0)[0]  # (H, W) — max across channels
+
+        saliency = saliency.cpu().numpy()
+        # Normalise to [0, 1]
+        s_min, s_max = saliency.min(), saliency.max()
+        if s_max - s_min > 1e-8:
+            saliency = (saliency - s_min) / (s_max - s_min)
+        return saliency
+    except Exception as e:
+        logger.warning(f"YOLO saliency map generation failed: {e}")
+        return None
+
+
+def overlay_heatmap_on_image(image: Image.Image, heatmap: np.ndarray, colormap=cv2.COLORMAP_JET, alpha=0.5) -> Image.Image:
+    """Overlay a [0,1] heatmap on a PIL image and return the blended result."""
+    img_resized = np.array(image.resize((224, 224))).astype(np.float32) / 255.0
+    heatmap_uint8 = (heatmap * 255).astype(np.uint8)
+    heatmap_color = cv2.applyColorMap(heatmap_uint8, colormap)
+    heatmap_color = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    blended = (1 - alpha) * img_resized + alpha * heatmap_color
+    blended = np.clip(blended * 255, 0, 255).astype(np.uint8)
+    return Image.fromarray(blended)
+
 # ============================================================================
 # ENSEMBLE MODULE
 # ============================================================================
@@ -816,24 +958,89 @@ class EducationalAgent:
             "Comminuted": "Severe (The bone has broken into multiple pieces.)"
         }
     
-    def translate(self, prediction: str, confidence: float) -> Dict[str, str]:
+    def translate(self, prediction: str, confidence: float, image: Optional[Image.Image] = None, gradcam_image: Optional[Image.Image] = None) -> Dict[str, str]:
         fracture_detected = prediction != "Healthy"
         severity_layman = self.severity_map.get(prediction, "Unknown")
         
+        # Fallback template-based generation
         if not fracture_detected:
             summary = f"Great news! The AI analysis suggests your bone looks healthy. The system is {confidence*100:.0f}% confident."
-            action_plan = "Recommended Actions:\n1. If pain persists, discuss with your doctor.\n2. No immediate treatment appears necessary."
+            action_plan = "Next Steps / Action Plan:\n1. If pain persists, discuss with your doctor.\n2. No immediate treatment appears necessary."
         else:
             summary = f"The AI analysis has detected what appears to be a **{prediction}** fracture. This is classified as **{severity_layman}**."
             kb_info = MEDICAL_KNOWLEDGE_BASE.get(prediction, {})
             guidelines = kb_info.get("treatment_guidelines", ["Consult with an orthopedic specialist."])
-            action_plan = "Recommended Actions:\n" + "\n".join([f"{i+1}. {g}" for i, g in enumerate(guidelines)])
+            action_plan = "Next Steps / Action Plan:\n" + "\n".join([f"{i+1}. {g}" for i, g in enumerate(guidelines)])
         
-        return {
+        fallback_result = {
             "patient_summary": summary,
             "severity_layman": severity_layman,
             "next_steps_action_plan": action_plan
         }
+
+        # Try to use Gemini Vision if available
+        if GEMINI_API_KEY and gradcam_image:
+            try:
+                import base64
+                from io import BytesIO
+                import json
+                import requests
+                
+                def pil_to_b64(img):
+                    buf = BytesIO()
+                    img.save(buf, format="JPEG")
+                    return base64.b64encode(buf.getvalue()).decode("utf-8")
+                
+                context = f"Diagnosis: {prediction}\nConfidence: {confidence*100:.0f}%\n"
+                
+                system_prompt = (
+                    f"You are {self.doctor_name}, an empathetic AI medical assistant. "
+                    "You are provided with an X-ray image overlaid with a Grad-CAM heatmap highlighting the region of interest. "
+                    "Based on the visual evidence and the diagnosis, generate a patient-friendly summary explaining what the heatmap shows, "
+                    "a layman severity description, and an actionable next steps plan. "
+                    "Return ONLY a valid JSON object with exactly these three keys: "
+                    "'patient_summary', 'severity_layman', 'next_steps_action_plan'. "
+                    "Do NOT include markdown formatting like ```json or any other text outside the JSON object."
+                )
+                
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+                payload = {
+                    "contents": [{
+                        "role": "user",
+                        "parts": [
+                            {"text": f"Generate the JSON response for this diagnosis:\n{context}"},
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/jpeg",
+                                    "data": pil_to_b64(gradcam_image)
+                                }
+                            }
+                        ]
+                    }],
+                    "systemInstruction": {"parts": [{"text": system_prompt}]}
+                }
+                
+                resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if 'candidates' in data and data['candidates']:
+                        text_response = data['candidates'][0]['content']['parts'][0]['text']
+                        text_response = text_response.strip()
+                        if text_response.startswith("```json"):
+                            text_response = text_response[7:]
+                        if text_response.startswith("```"):
+                            text_response = text_response[3:]
+                        if text_response.endswith("```"):
+                            text_response = text_response[:-3]
+                        
+                        gemini_result = json.loads(text_response.strip())
+                        
+                        if all(k in gemini_result for k in ["patient_summary", "severity_layman", "next_steps_action_plan"]):
+                            return gemini_result
+            except Exception as e:
+                logger.error(f"EducationalAgent Gemini Vision generation error: {e}. Falling back to template.")
+        
+        return fallback_result
 
 # ============================================================================
 # KNOWLEDGE BASE CONSTANTS
@@ -995,24 +1202,41 @@ class KnowledgeAgent:
         except Exception:
             return []
 
-    def generate_explanation_with_gemini(self, summary: Dict[str, Any], retrieved_docs: List[Dict[str, Any]]) -> Optional[str]:
+    def generate_explanation_with_gemini(self, summary: Dict[str, Any], retrieved_docs: List[Dict[str, Any]], audience: str = "clinician") -> Optional[str]:
         if not GEMINI_API_KEY:
             return None
             
         context = f"Diagnosis: {summary.get('Diagnosis')}\nDetails: {summary}\n\nRelated Docs:\n" + \
                   "\n".join([d['content'] for d in retrieved_docs])
         
-        system_prompt = (
-            "You are MedAI. Explain this fracture diagnosis to a patient. "
-            "Use the provided context. Be clear, empathetic, but informational. "
-            "Do NOT give medical advice."
-        )
+        if audience == "clinician":
+            system_prompt = (
+                "You are an expert orthopedic clinician. Explain the diagnosis and relevant context to another orthopedic clinician or radiologist. "
+                "Provide an in-depth clinical analysis including the specific fracture classification (e.g., AO/OTA), "
+                "exact anatomical location, and accurate ICD-10 coding. Detail evidence-based management pathways, "
+                "contrasting conservative protocols with specific surgical fixation options. Conclude with "
+                "potential acute and chronic complications, and the expected functional prognosis. "
+                "STRICT INSTRUCTION: Focus purely on the medical assessment. Do NOT include any information "
+                "about system behavior, AI architecture, ensemble learning, MedAI, or how the diagnosis was generated."
+            )
+            user_instruction = "Provide the detailed clinical analysis based on the context."
+        else:
+            system_prompt = (
+                "You are an expert orthopedic clinician. Explain this fracture diagnosis to a patient. "
+                "Use the provided context. Be clear, empathetic, but informational. "
+                "Do NOT give medical advice."
+            )
+            user_instruction = f"Explain this:\n{context}"
         
+        # Remove the "produced by a diagnostic ensemble" part from the summary string to avoid leaking MedAI info
+        clean_context = context.replace("MedAI", "").replace("ensemble", "").replace("Ensemble", "")
+        clean_user_instruction = user_instruction.replace("MedAI", "").replace("ensemble", "").replace("Ensemble", "")
+
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{
                 "role": "user",
-                "parts": [{"text": f"Explain this:\n{context}"}]
+                "parts": [{"text": f"{clean_user_instruction}\n\nContext:\n{clean_context}"}]
             }],
             "systemInstruction": {"parts": [{"text": system_prompt}]}
         }
@@ -1263,31 +1487,56 @@ def process_image(image_or_bytes,
         "is_label_swapped": True
     }
 
-    # 3. Explainability (per-model Grad-CAMs if available — skip YOLO & RAD-DINO)
+    # 3. Explainability (per-model visualizations)
+    # Grad-CAM for CNN models, attention rollout for RAD-DINO, saliency for YOLO
     per_model_heatmaps = {}
     primary_cam_b64 = None
+    primary_cam_img = None
     explain_agent = None
     for name, model in models.items():
-        # Grad-CAM doesn't apply to YOLO wrappers or RAD-DINO
-        if is_yolo_model(model) or is_rad_dino_model(name):
-            continue
         try:
-            explain_agent = ExplainabilityAgent(model, CLASS_NAMES, device)
-            pred_idx = CLASS_NAMES.index(ensemble_result['ensemble_prediction'])
-            cam_array = explain_agent.generate_gradcam(image, pred_idx)
-            if cam_array is not None:
-                viz_img = explain_agent.visualize_gradcam(image, cam_array)
-                buf = io.BytesIO()
-                viz_img.save(buf, format="PNG")
-                per_model_heatmaps[name] = base64.b64encode(buf.getvalue()).decode('utf-8')
-                if primary_cam_b64 is None:
-                    primary_cam_b64 = per_model_heatmaps[name]
-        except Exception:
+            if is_rad_dino_model(name):
+                # Attention rollout for ViT-based RAD-DINO
+                attn_map = generate_attention_rollout(model, image, device)
+                if attn_map is not None:
+                    viz_img = overlay_heatmap_on_image(image, attn_map)
+                    buf = io.BytesIO()
+                    viz_img.save(buf, format="PNG")
+                    per_model_heatmaps[name] = base64.b64encode(buf.getvalue()).decode('utf-8')
+                    if primary_cam_b64 is None:
+                        primary_cam_b64 = per_model_heatmaps[name]
+                        primary_cam_img = viz_img
+            elif is_yolo_model(model):
+                # Input gradient saliency for YOLO
+                saliency_map = generate_yolo_saliency(model, image, device)
+                if saliency_map is not None:
+                    viz_img = overlay_heatmap_on_image(image, saliency_map)
+                    buf = io.BytesIO()
+                    viz_img.save(buf, format="PNG")
+                    per_model_heatmaps[name] = base64.b64encode(buf.getvalue()).decode('utf-8')
+                    if primary_cam_b64 is None:
+                        primary_cam_b64 = per_model_heatmaps[name]
+                        primary_cam_img = viz_img
+            else:
+                # Standard Grad-CAM for CNN models
+                explain_agent = ExplainabilityAgent(model, CLASS_NAMES, device)
+                pred_idx = CLASS_NAMES.index(ensemble_result['ensemble_prediction'])
+                cam_array = explain_agent.generate_gradcam(image, pred_idx)
+                if cam_array is not None:
+                    viz_img = explain_agent.visualize_gradcam(image, cam_array)
+                    buf = io.BytesIO()
+                    viz_img.save(buf, format="PNG")
+                    per_model_heatmaps[name] = base64.b64encode(buf.getvalue()).decode('utf-8')
+                    if primary_cam_b64 is None:
+                        primary_cam_b64 = per_model_heatmaps[name]
+                        primary_cam_img = viz_img
+        except Exception as e:
+            logger.warning(f"Visualization generation failed for {name}: {e}")
             continue
 
     # 4. Educational Content
     edu_agent = EducationalAgent()
-    edu_result = edu_agent.translate(ensemble_result['ensemble_prediction'], ensemble_result['ensemble_confidence'])
+    edu_result = edu_agent.translate(ensemble_result['ensemble_prediction'], ensemble_result['ensemble_confidence'], image=image, gradcam_image=primary_cam_img)
 
     # 5. Knowledge Base
     know_agent = KnowledgeAgent()
@@ -1298,7 +1547,7 @@ def process_image(image_or_bytes,
     if "error" not in kb_result and GEMINI_API_KEY:
         try:
             r_docs = know_agent.retrieve_sources(ensemble_result['ensemble_prediction'])
-            gemini_explanation = know_agent.generate_explanation_with_gemini(kb_result, r_docs)
+            gemini_explanation = know_agent.generate_explanation_with_gemini(kb_result, r_docs, audience="clinician")
             if gemini_explanation:
                 kb_result["gemini_explanation"] = gemini_explanation
         except Exception as e:
@@ -1457,445 +1706,7 @@ async def chat(req: ChatRequest):
 # Additional endpoints
 # -----------------------
 
-
-def _b64_to_pil(b64: str) -> Image.Image:
-    try:
-        return Image.open(BytesIO(base64.b64decode(b64))).convert('RGB')
-    except Exception:
-        return None
-
-
-def _make_pdf_report(payload: Dict[str, Any], original_image_bytes: bytes) -> BytesIO:
-    """Create a professional multi-page PDF report from the diagnosis payload."""
-    from matplotlib.patches import FancyBboxPatch, Rectangle
-    from textwrap import wrap
-    import matplotlib.patheffects as pe
-
-    buf = BytesIO()
-
-    # ── Design Tokens (aligned with website dark-medical theme) ──────────
-    CLR_BG       = '#FFFFFF'
-    CLR_HEADER   = '#0f172a'   # slate-900
-    CLR_ACCENT   = '#2563eb'   # blue-600 (primary)
-    CLR_ACCENT_L = '#dbeafe'   # blue-100
-    CLR_TEXT     = '#1e293b'   # slate-800
-    CLR_TEXT_SEC = '#64748b'   # slate-500
-    CLR_RED      = '#ef4444'   # danger / fracture
-    CLR_GREEN    = '#22c55e'   # healthy
-    CLR_AMBER    = '#f59e0b'   # amber warning
-    CLR_BORDER   = '#e2e8f0'   # slate-200
-    CLR_CARD_BG  = '#f8fafc'   # slate-50
-    CLR_HEALTHY_BAR = '#22c55e'
-    CLR_FRACT_BAR   = '#ef4444'
-
-    FONT_FAMILY  = 'sans-serif'
-
-    # ── Extract all payload data ─────────────────────────────────────────
-    pred_data   = payload.get('prediction', {})
-    ensemble    = payload.get('ensemble', {})
-    explanation = payload.get('explanation', {})
-    edu         = payload.get('educational', {}) or {}
-    kb          = payload.get('knowledge_base', {}) or {}
-    conformal   = payload.get('conformal', {}) or {}
-    audit       = payload.get('audit', {}) or {}
-    metrics     = payload.get('metrics', {}) or {}
-
-    top_class      = pred_data.get('top_class') or ensemble.get('ensemble_prediction') or 'Unknown'
-    confidence     = pred_data.get('confidence_score') or ensemble.get('ensemble_confidence') or 0.0
-    fracture       = pred_data.get('fracture_detected', top_class != 'Healthy')
-    all_probs      = pred_data.get('all_probabilities') or ensemble.get('all_probabilities') or {}
-    indiv_preds    = pred_data.get('individual_model_predictions') or ensemble.get('individual_predictions') or {}
-
-    severity       = edu.get('severity_layman', '')
-    patient_summary = edu.get('patient_summary', '')
-    action_plan    = edu.get('next_steps_action_plan', '')
-
-    definition     = kb.get('definition', '')
-    icd_code       = kb.get('icd_code', '')
-    kb_severity    = kb.get('severity', '')
-    prognosis      = kb.get('prognosis', '')
-    guidelines     = kb.get('Treatment_Guidelines', []) or kb.get('treatment_guidelines', []) or []
-    gemini_text    = kb.get('gemini_explanation', '')
-
-    conf_enabled   = conformal.get('enabled', False)
-    conf_set       = conformal.get('conformal_set')
-    conf_threshold = conformal.get('conformal_threshold')
-
-    inference_id   = audit.get('inference_id', '')
-    timestamp      = audit.get('timestamp', '')
-    models_loaded  = audit.get('models_loaded', [])
-    margin         = metrics.get('top1_vs_top2_margin', None)
-
-    cam_b64 = explanation.get('heatmap_b64')
-
-    status_color = CLR_RED if fracture else CLR_GREEN
-    status_label = 'FRACTURE DETECTED' if fracture else 'HEALTHY'
-
-    try:
-        # ═══════════════════════════════════════════════════════════════
-        #  PAGE 1: Primary Diagnosis Report
-        # ═══════════════════════════════════════════════════════════════
-        from matplotlib.backends.backend_pdf import PdfPages
-        import matplotlib.colors as mcolors
-        pdf = PdfPages(buf)
-
-        fig = plt.figure(figsize=(8.5, 11), facecolor=CLR_BG, dpi=150)
-
-        # Helper: draw rounded rectangle card on figure
-        def draw_card(target, x, y, w, h, fill=CLR_CARD_BG, edge=CLR_BORDER, lw=0.8, radius=0.008):
-            box = FancyBboxPatch((x, y), w, h,
-                                 boxstyle=f"round,pad=0,rounding_size={radius}",
-                                 facecolor=fill, edgecolor=edge, linewidth=lw,
-                                 transform=target.transFigure, clip_on=False)
-            target.patches.append(box)
-
-        # Helper: wrap text to fit width
-        def wrap_text(text, width=90):
-            lines = []
-            for paragraph in text.split('\n'):
-                if paragraph.strip() == '':
-                    lines.append('')
-                else:
-                    lines.extend(wrap(paragraph, width=width))
-            return '\n'.join(lines)
-
-        # ── Collect page 1 vs page 2 content ─────────────────────────
-        # Model ensemble and action plan move to page 2 if we have too
-        # much content (conformal + guidelines + summary + models).
-        # We treat guidelines and action plan as potentially redundant.
-        # If action plan items duplicate guidelines, skip the action plan.
-        show_action_plan = bool(action_plan)
-        if guidelines and action_plan:
-            # Check if action plan is just a repeat of guidelines
-            plan_lines_raw = [l.lstrip('0123456789. ').strip() for l in action_plan.split('\n')
-                              if l.strip() and not l.strip().startswith('Recommended')]
-            if set(plan_lines_raw) <= set(g.strip() for g in guidelines):
-                show_action_plan = False
-
-        # ── A. Header Bar ────────────────────────────────────────────
-        header_rect = Rectangle((0, 0.930), 1, 0.070, transform=fig.transFigure,
-                                facecolor=CLR_HEADER, edgecolor='none', clip_on=False)
-        fig.patches.append(header_rect)
-        accent_stripe = Rectangle((0, 0.927), 1, 0.003, transform=fig.transFigure,
-                                  facecolor=CLR_ACCENT, edgecolor='none', clip_on=False)
-        fig.patches.append(accent_stripe)
-
-        fig.text(0.05, 0.968, '◈  MedAI', fontsize=18, fontweight='bold',
-                 color='white', fontfamily=FONT_FAMILY, va='center')
-        fig.text(0.05, 0.943, 'Fracture Diagnosis Report',
-                 fontsize=9, color='#93c5fd', fontfamily=FONT_FAMILY, va='center')
-        report_id_display = f'{inference_id[:13]}…' if len(inference_id) > 13 else inference_id
-        fig.text(0.95, 0.965, f'ID: {report_id_display}',
-                 fontsize=6, color='#94a3b8', fontfamily=FONT_FAMILY, va='center', ha='right')
-        fig.text(0.95, 0.943, f'{timestamp[:19].replace("T", " ")}',
-                 fontsize=6, color='#94a3b8', fontfamily=FONT_FAMILY, va='center', ha='right')
-
-        # ── B. Diagnosis Banner (2-row layout to avoid text collision) ─
-        banner_top = 0.910
-        banner_h = 0.050
-        status_rgba = mcolors.to_rgba(status_color, alpha=0.08)
-        draw_card(fig, 0.04, banner_top - banner_h, 0.92, banner_h,
-                  fill=status_rgba, edge=status_color, lw=1.2)
-
-        # Row 1: status label left, confidence right
-        fig.text(0.06, banner_top - 0.014, '●  ' + status_label, fontsize=11, fontweight='bold',
-                 color=status_color, fontfamily=FONT_FAMILY, va='center')
-        fig.text(0.92, banner_top - 0.014, f'{confidence*100:.1f}%', fontsize=13,
-                 fontweight='bold', color=status_color, fontfamily=FONT_FAMILY, va='center', ha='right')
-        # Row 2: diagnosis class left, confidence label right
-        fig.text(0.08, banner_top - 0.036, f'Diagnosis:  {top_class}', fontsize=9,
-                 color=CLR_TEXT, fontfamily=FONT_FAMILY, va='center')
-        fig.text(0.92, banner_top - 0.036, 'confidence', fontsize=6,
-                 color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, va='center', ha='right')
-
-        # ── C. X-ray Images ──────────────────────────────────────────
-        img_top = 0.845
-        img_h = 0.225
-        fig.text(0.05, img_top + 0.008, 'Imaging Analysis', fontsize=10, fontweight='bold',
-                 color=CLR_TEXT, fontfamily=FONT_FAMILY)
-
-        ax_img = fig.add_axes([0.05, img_top - img_h, 0.42, img_h])
-        img = Image.open(BytesIO(original_image_bytes)).convert('RGB')
-        ax_img.imshow(img)
-        ax_img.axis('off')
-        fig.text(0.26, img_top - img_h - 0.012, 'Original X-ray', fontsize=7,
-                 color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, ha='center')
-
-        ax_cam = fig.add_axes([0.53, img_top - img_h, 0.42, img_h])
-        if cam_b64:
-            cam_img = _b64_to_pil(cam_b64)
-            if cam_img:
-                ax_cam.imshow(cam_img)
-            else:
-                ax_cam.text(0.5, 0.5, 'Grad-CAM unavailable', ha='center', va='center',
-                            fontsize=8, color=CLR_TEXT_SEC)
-                ax_cam.set_facecolor(CLR_CARD_BG)
-        else:
-            ax_cam.text(0.5, 0.5, 'Grad-CAM unavailable', ha='center', va='center',
-                        fontsize=8, color=CLR_TEXT_SEC)
-            ax_cam.set_facecolor(CLR_CARD_BG)
-        ax_cam.axis('off')
-        fig.text(0.74, img_top - img_h - 0.012, 'AI Explanation (Grad-CAM)', fontsize=7,
-                 color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, ha='center')
-
-        # ── D. Diagnosis Details (left) + Probability Chart (right) ──
-        section_top = img_top - img_h - 0.030
-        fig.text(0.05, section_top, 'Diagnosis Details', fontsize=10, fontweight='bold',
-                 color=CLR_TEXT, fontfamily=FONT_FAMILY)
-
-        chart_h = 0.155
-        chart_top = section_top - 0.012
-
-        # Left: compact info card
-        info_card_h = chart_h
-        draw_card(fig, 0.04, chart_top - info_card_h, 0.42, info_card_h, fill=CLR_CARD_BG)
-        info_y = chart_top - 0.010
-        info_items = []
-        if definition:
-            # Truncate long definitions for the compact card
-            short_def = definition[:80] + '…' if len(definition) > 80 else definition
-            info_items.append(('Definition', short_def))
-        if icd_code:
-            info_items.append(('ICD Code', icd_code))
-        if severity:
-            sev_short = severity.split('(')[0].strip() if '(' in severity else severity
-            info_items.append(('Severity', sev_short))
-        elif kb_severity:
-            info_items.append(('Severity', kb_severity))
-        if prognosis:
-            short_prog = prognosis[:70] + '…' if len(prognosis) > 70 else prognosis
-            info_items.append(('Prognosis', short_prog))
-        if margin is not None:
-            info_items.append(('Margin', f'{margin*100:.1f}% over 2nd class'))
-
-        for label, value in info_items:
-            fig.text(0.06, info_y, f'{label}:', fontsize=6.5, fontweight='bold',
-                     color=CLR_TEXT, fontfamily=FONT_FAMILY, va='top')
-            wrapped_val = wrap_text(str(value), width=45)
-            n_lines = len(wrapped_val.split('\n'))
-            fig.text(0.06, info_y - 0.011, wrapped_val, fontsize=6, color=CLR_TEXT_SEC,
-                     fontfamily=FONT_FAMILY, va='top', linespacing=1.2)
-            info_y -= 0.012 + (n_lines * 0.011)
-
-        # Right: probability bar chart
-        ax_bar = fig.add_axes([0.55, chart_top - chart_h, 0.38, chart_h])
-        if all_probs:
-            pairs = sorted(all_probs.items(), key=lambda x: x[1])
-            labels_sorted = [p[0] for p in pairs]
-            vals_sorted   = [p[1] for p in pairs]
-            y_pos = range(len(labels_sorted))
-            bar_colors_final = []
-            for l, v in zip(labels_sorted, vals_sorted):
-                if l == top_class:
-                    bar_colors_final.append(CLR_HEALTHY_BAR if l == 'Healthy' else CLR_ACCENT)
-                elif l == 'Healthy':
-                    bar_colors_final.append(mcolors.to_rgba(CLR_HEALTHY_BAR, alpha=0.4))
-                else:
-                    bar_colors_final.append('#fda4af')
-            ax_bar.barh(list(y_pos), [v * 100 for v in vals_sorted],
-                        color=bar_colors_final, height=0.65, edgecolor='none')
-            ax_bar.set_yticks(list(y_pos))
-            ax_bar.set_yticklabels(labels_sorted, fontsize=5.5, color=CLR_TEXT)
-            ax_bar.set_xlabel('Probability (%)', fontsize=6, color=CLR_TEXT_SEC, labelpad=2)
-            ax_bar.tick_params(axis='x', labelsize=5, colors=CLR_TEXT_SEC)
-            ax_bar.spines['top'].set_visible(False)
-            ax_bar.spines['right'].set_visible(False)
-            ax_bar.spines['left'].set_color(CLR_BORDER)
-            ax_bar.spines['bottom'].set_color(CLR_BORDER)
-            for i, v in enumerate(vals_sorted):
-                ax_bar.text(v * 100 + 0.5, i, f'{v*100:.1f}%', va='center',
-                            fontsize=5, color=CLR_TEXT_SEC)
-            ax_bar.set_title('Class Probabilities', fontsize=7, fontweight='bold',
-                             color=CLR_TEXT, pad=4)
-        else:
-            ax_bar.text(0.5, 0.5, 'No probability data', ha='center', va='center',
-                        fontsize=8, color=CLR_TEXT_SEC)
-            ax_bar.axis('off')
-
-        # ── Track vertical cursor for remaining sections ─────────────
-        FOOTER_TOP = 0.050    # Footer occupies y=[0, 0.050]
-        next_y = chart_top - chart_h - 0.020
-
-        # ── E. Conformal Prediction (if enabled) ────────────────────
-        if conf_enabled and (conf_set or conf_threshold):
-            conf_h = 0.028
-            draw_card(fig, 0.04, next_y - conf_h, 0.92, conf_h,
-                      fill='#fef3c7', edge=CLR_AMBER, lw=0.8)
-            fig.text(0.06, next_y - conf_h / 2, '⚠  Conformal Prediction', fontsize=7,
-                     fontweight='bold', color='#92400e', fontfamily=FONT_FAMILY, va='center')
-            conf_parts = []
-            if conf_set:
-                conf_parts.append(f'Set: {", ".join(conf_set) if isinstance(conf_set, list) else str(conf_set)}')
-            if conf_threshold:
-                conf_parts.append(f'Threshold: {conf_threshold}')
-            fig.text(0.55, next_y - conf_h / 2, '  |  '.join(conf_parts), fontsize=6.5,
-                     color='#78350f', fontfamily=FONT_FAMILY, va='center', ha='center')
-            next_y -= conf_h + 0.010
-
-        # ── F. Patient Summary ───────────────────────────────────────
-        if patient_summary and next_y - 0.060 > FOOTER_TOP:
-            fig.text(0.05, next_y, 'Patient Summary', fontsize=9, fontweight='bold',
-                     color=CLR_TEXT, fontfamily=FONT_FAMILY)
-            next_y -= 0.006
-            clean_summary = patient_summary.replace('**', '')
-            wrapped_summary = wrap_text(clean_summary, width=105)
-            n_sum_lines = len(wrapped_summary.split('\n'))
-            card_h = max(0.035, n_sum_lines * 0.011 + 0.012)
-            draw_card(fig, 0.04, next_y - card_h, 0.92, card_h,
-                      fill='#eff6ff', edge='#bfdbfe', lw=0.8)
-            fig.text(0.06, next_y - 0.008, wrapped_summary, fontsize=6.5, color=CLR_TEXT,
-                     fontfamily=FONT_FAMILY, va='top', linespacing=1.3)
-            next_y -= card_h + 0.012
-
-        # ── G. Treatment Guidelines ──────────────────────────────────
-        if guidelines and next_y - 0.040 > FOOTER_TOP:
-            fig.text(0.05, next_y, 'Treatment Guidelines', fontsize=9, fontweight='bold',
-                     color=CLR_TEXT, fontfamily=FONT_FAMILY)
-            next_y -= 0.006
-            card_h = len(guidelines) * 0.013 + 0.012
-            draw_card(fig, 0.04, next_y - card_h, 0.92, card_h, fill=CLR_CARD_BG)
-            for i, g in enumerate(guidelines):
-                bullet_y = next_y - 0.010 - (i * 0.013)
-                fig.text(0.06, bullet_y, '•', fontsize=7, color=CLR_ACCENT,
-                         fontfamily=FONT_FAMILY, va='center')
-                fig.text(0.075, bullet_y, g, fontsize=6.5, color=CLR_TEXT,
-                         fontfamily=FONT_FAMILY, va='center')
-            next_y -= card_h + 0.012
-
-        # ── H. Recommended Actions (only if not duplicate of guidelines) ─
-        if show_action_plan and next_y - 0.040 > FOOTER_TOP:
-            fig.text(0.05, next_y, 'Recommended Actions', fontsize=9, fontweight='bold',
-                     color=CLR_TEXT, fontfamily=FONT_FAMILY)
-            next_y -= 0.006
-            plan_lines = [l for l in action_plan.split('\n')
-                          if l.strip() and not l.strip().startswith('Recommended')]
-            card_h = len(plan_lines) * 0.013 + 0.012
-            draw_card(fig, 0.04, next_y - card_h, 0.92, card_h, fill=CLR_CARD_BG)
-            for i, line in enumerate(plan_lines):
-                line_y = next_y - 0.010 - (i * 0.013)
-                fig.text(0.06, line_y, '→', fontsize=6, color=CLR_ACCENT,
-                         fontfamily=FONT_FAMILY, va='center')
-                fig.text(0.075, line_y, line.lstrip('0123456789. '), fontsize=6.5,
-                         color=CLR_TEXT, fontfamily=FONT_FAMILY, va='center')
-            next_y -= card_h + 0.012
-
-        # ── I. Model Ensemble Summary ────────────────────────────────
-        if indiv_preds and next_y - 0.040 > FOOTER_TOP:
-            fig.text(0.05, next_y, 'Model Ensemble Breakdown', fontsize=9, fontweight='bold',
-                     color=CLR_TEXT, fontfamily=FONT_FAMILY)
-            next_y -= 0.006
-            n_models = len(indiv_preds)
-            row_h = 0.013
-            card_h = n_models * row_h + 0.020
-            # Check if it fits; if not, truncate to fit
-            avail = next_y - FOOTER_TOP - 0.010
-            if card_h > avail:
-                n_show = max(1, int((avail - 0.020) / row_h))
-                card_h = n_show * row_h + 0.020
-            else:
-                n_show = n_models
-            draw_card(fig, 0.04, next_y - card_h, 0.92, card_h, fill=CLR_CARD_BG)
-            # Column headers
-            fig.text(0.06, next_y - 0.009, 'Model', fontsize=5.5, fontweight='bold',
-                     color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, va='center')
-            fig.text(0.48, next_y - 0.009, 'Prediction', fontsize=5.5, fontweight='bold',
-                     color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, va='center', ha='center')
-            fig.text(0.88, next_y - 0.009, 'Confidence', fontsize=5.5, fontweight='bold',
-                     color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY, va='center', ha='right')
-            for i, (mname, mdata) in enumerate(list(indiv_preds.items())[:n_show]):
-                row_y = next_y - 0.020 - (i * row_h)
-                display_name = mname.replace('_', ' ').replace('best ', '').title()
-                m_class = mdata.get('class', '?')
-                m_conf  = mdata.get('confidence', 0)
-                fig.text(0.06, row_y, display_name, fontsize=6, color=CLR_TEXT,
-                         fontfamily=FONT_FAMILY, va='center')
-                fig.text(0.48, row_y, m_class, fontsize=6, color=CLR_TEXT,
-                         fontfamily=FONT_FAMILY, va='center', ha='center')
-                conf_color = CLR_GREEN if m_conf > 0.7 else (CLR_AMBER if m_conf > 0.4 else CLR_RED)
-                fig.text(0.88, row_y, f'{m_conf*100:.1f}%', fontsize=6, fontweight='bold',
-                         color=conf_color, fontfamily=FONT_FAMILY, va='center', ha='right')
-
-        # ── J. Footer ────────────────────────────────────────────────
-        footer_rect = Rectangle((0, 0), 1, FOOTER_TOP, transform=fig.transFigure,
-                                facecolor=CLR_HEADER, edgecolor='none', clip_on=False)
-        fig.patches.append(footer_rect)
-        footer_stripe = Rectangle((0, FOOTER_TOP), 1, 0.002, transform=fig.transFigure,
-                                  facecolor=CLR_ACCENT, edgecolor='none', clip_on=False)
-        fig.patches.append(footer_stripe)
-
-        fig.text(0.05, 0.030, '◈ MedAI Research  •  DJSCE-ACM Team',
-                 fontsize=6, color='#94a3b8', fontfamily=FONT_FAMILY, va='center')
-        fig.text(0.95, 0.030,
-                 'AI-assisted analysis — not a substitute for professional medical advice',
-                 fontsize=5.5, color='#64748b', fontfamily=FONT_FAMILY, va='center', ha='right')
-        fig.text(0.50, 0.012, f'Inference ID: {inference_id}',
-                 fontsize=5, color='#475569', fontfamily=FONT_FAMILY, va='center', ha='center')
-
-        pdf.savefig(fig, facecolor=CLR_BG)
-        plt.close(fig)
-
-        # ═══════════════════════════════════════════════════════════════
-        #  PAGE 2: AI Explanation (only if Gemini text available)
-        # ═══════════════════════════════════════════════════════════════
-        if gemini_text:
-            fig2 = plt.figure(figsize=(8.5, 11), facecolor=CLR_BG, dpi=150)
-            fig2.subplots_adjust(left=0, right=1, top=1, bottom=0)
-
-            # Header (same style, page 2)
-            h2 = Rectangle((0, 0.925), 1, 0.075, transform=fig2.transFigure,
-                            facecolor=CLR_HEADER, edgecolor='none', clip_on=False)
-            fig2.patches.append(h2)
-            s2 = Rectangle((0, 0.922), 1, 0.004, transform=fig2.transFigure,
-                            facecolor=CLR_ACCENT, edgecolor='none', clip_on=False)
-            fig2.patches.append(s2)
-
-            fig2.text(0.05, 0.962, '◈  MedAI', fontsize=20, fontweight='bold',
-                      color='white', fontfamily=FONT_FAMILY, va='center')
-            fig2.text(0.05, 0.940, 'AI-Generated Medical Explanation',
-                      fontsize=11, color='#93c5fd', fontfamily=FONT_FAMILY, va='center')
-            fig2.text(0.95, 0.955, 'Page 2 of 2', fontsize=7, color='#94a3b8',
-                      fontfamily=FONT_FAMILY, va='center', ha='right')
-
-            # Gemini explanation content
-            fig2.text(0.05, 0.900, 'Gemini AI Explanation', fontsize=13, fontweight='bold',
-                      color=CLR_TEXT, fontfamily=FONT_FAMILY)
-            fig2.text(0.05, 0.886, f'Diagnosis: {top_class}  •  Powered by Gemini',
-                      fontsize=8, color=CLR_TEXT_SEC, fontfamily=FONT_FAMILY)
-
-            # Clean and wrap the gemini text
-            clean_gemini = gemini_text.replace('**', '').replace('###', '').replace('##', '').replace('#', '')
-            wrapped_gemini = wrap_text(clean_gemini, width=105)
-            # Limit to fit page
-            gemini_lines = wrapped_gemini.split('\n')[:55]
-
-            draw_card(fig2, 0.04, 0.06, 0.92, 0.815, fill='#eef2ff', edge='#c7d2fe', lw=0.8)
-            fig2.text(0.06, 0.860, '\n'.join(gemini_lines), fontsize=7, color=CLR_TEXT,
-                      fontfamily=FONT_FAMILY, va='top', linespacing=1.5)
-
-            # Page 2 footer
-            f2 = Rectangle((0, 0), 1, 0.040, transform=fig2.transFigure,
-                            facecolor=CLR_HEADER, edgecolor='none', clip_on=False)
-            fig2.patches.append(f2)
-            fs2 = Rectangle((0, 0.040), 1, 0.002, transform=fig2.transFigure,
-                             facecolor=CLR_ACCENT, edgecolor='none', clip_on=False)
-            fig2.patches.append(fs2)
-            fig2.text(0.05, 0.025, '◈ MedAI Research  •  DJSCE-ACM Team',
-                     fontsize=7, color='#94a3b8', fontfamily=FONT_FAMILY, va='center')
-            fig2.text(0.95, 0.025,
-                     'AI-assisted analysis — not a substitute for professional medical advice',
-                     fontsize=6, color='#64748b', fontfamily=FONT_FAMILY, va='center', ha='right')
-
-            pdf.savefig(fig2, facecolor=CLR_BG)
-            plt.close(fig2)
-
-        pdf.close()
-        buf.seek(0)
-        return buf
-    except Exception as e:
-        logger.exception('Failed to build PDF report')
-        buf.seek(0)
-        return buf
-
+from report_generator import _make_pdf_report, _b64_to_pil
 
 @app.get('/diagnose/reliability')
 def get_reliability():
@@ -1904,10 +1715,15 @@ def get_reliability():
     if not os.path.exists(npz_path):
         return JSONResponse(content={'error': 'val_calib.npz not found', 'available': False}, status_code=404)
     try:
-        data = np.load(npz_path)
-        # Expected keys: probs, labels
-        probs = data.get('probs')
-        labels = data.get('labels')
+        data = np.load(npz_path, allow_pickle=True)
+        # Support both 'probs' (n, classes) and 'model_probs' (n, models, classes)
+        if 'model_probs' in data.files:
+            probs = np.mean(data['model_probs'], axis=1)  # average across models
+        elif 'probs' in data.files:
+            probs = data['probs']
+        else:
+            probs = None
+        labels = data['labels'] if 'labels' in data.files else None
         if probs is None or labels is None:
             return JSONResponse(content={'error': 'Unexpected val_calib.npz format'}, status_code=500)
 

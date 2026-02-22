@@ -267,7 +267,7 @@ def main():
                     st.caption(f"**Category:** {source.get('category', 'N/A')}")
                     st.caption(f"**Use Case:** {source.get('use_case', 'N/A')}")
         
-        st.subheader("Patient Summary")
+        st.subheader("Simplified Explanation")
         st.json(patient_context)
         st.markdown("---")
         st.warning("The AI answers are generated using this specific context. They are not final medical advice.")

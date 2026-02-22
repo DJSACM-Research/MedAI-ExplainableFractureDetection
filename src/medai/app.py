@@ -919,21 +919,22 @@ class EducationalAgent:
             "Comminuted": "Severe (The bone has broken into multiple pieces.)"
         }
     
-    def translate(self, diagnosis_result: Dict[str, Any], explanation_text: str) -> Dict[str, str]:
-        """Generates patient-friendly summary and action plan."""
+    def translate(self, diagnosis_result: Dict[str, Any], explanation_text: str, image: Optional[Image.Image] = None, gradcam_image: Optional[Image.Image] = None) -> Dict[str, str]:
+        """Generates patient-friendly summary and action plan using Gemini Vision if available."""
         fracture_detected = diagnosis_result.get("fracture_detected", False)
         predicted_class = diagnosis_result.get("predicted_class", diagnosis_result.get("ensemble_prediction", "Unknown"))
         confidence = diagnosis_result.get("confidence_score", diagnosis_result.get("ensemble_confidence", 0.0))
         
         severity_layman = self.severity_map.get(predicted_class, "Unknown")
         
+        # Fallback template-based generation
         if not fracture_detected:
             summary = (
                 f"Great news! The AI analysis suggests your bone looks healthy. "
                 f"The system is {confidence*100:.0f}% confident in this assessment."
             )
             action_plan = (
-                "📋 **Recommended Actions:**\n"
+                "📋 **Next Steps / Action Plan:**\n"
                 "1. If you're still experiencing pain, please discuss with your doctor.\n"
                 "2. This AI result should be confirmed by a medical professional.\n"
                 "3. No immediate treatment appears necessary based on this analysis."
@@ -949,17 +950,81 @@ class EducationalAgent:
             guidelines = kb_info.get("treatment_guidelines", ["Consult with an orthopedic specialist."])
             
             action_plan = (
-                "📋 **Recommended Actions:**\n"
+                "📋 **Next Steps / Action Plan:**\n"
                 + "\n".join([f"{i+1}. {g}" for i, g in enumerate(guidelines)])
                 + f"\n\n⚠️ **Important:** This is an AI-assisted analysis. "
                 f"Please consult with {self.doctor_name} for definitive diagnosis and treatment."
             )
         
-        return {
+        fallback_result = {
             "patient_summary": summary,
             "severity_layman": severity_layman,
             "next_steps_action_plan": action_plan
         }
+
+        # Try to use Gemini Vision if available
+        if GEMINI_API_KEY and gradcam_image:
+            try:
+                import base64
+                from io import BytesIO
+                import json
+                import requests
+                
+                def pil_to_b64(img):
+                    buf = BytesIO()
+                    img.save(buf, format="JPEG")
+                    return base64.b64encode(buf.getvalue()).decode("utf-8")
+                
+                context = f"Diagnosis: {predicted_class}\nConfidence: {confidence*100:.0f}%\n"
+                
+                system_prompt = (
+                    f"You are {self.doctor_name}, an empathetic AI medical assistant. "
+                    "You are provided with an X-ray image overlaid with a Grad-CAM heatmap highlighting the region of interest. "
+                    "Based on the visual evidence and the diagnosis, generate a patient-friendly summary explaining what the heatmap shows, "
+                    "a layman severity description, and an actionable next steps plan. "
+                    "Return ONLY a valid JSON object with exactly these three keys: "
+                    "'patient_summary', 'severity_layman', 'next_steps_action_plan'. "
+                    "Do NOT include markdown formatting like ```json or any other text outside the JSON object."
+                )
+                
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+                payload = {
+                    "contents": [{
+                        "role": "user",
+                        "parts": [
+                            {"text": f"Generate the JSON response for this diagnosis:\n{context}"},
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/jpeg",
+                                    "data": pil_to_b64(gradcam_image)
+                                }
+                            }
+                        ]
+                    }],
+                    "systemInstruction": {"parts": [{"text": system_prompt}]}
+                }
+                
+                resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if 'candidates' in data and data['candidates']:
+                        text_response = data['candidates'][0]['content']['parts'][0]['text']
+                        text_response = text_response.strip()
+                        if text_response.startswith("```json"):
+                            text_response = text_response[7:]
+                        if text_response.startswith("```"):
+                            text_response = text_response[3:]
+                        if text_response.endswith("```"):
+                            text_response = text_response[:-3]
+                        
+                        gemini_result = json.loads(text_response.strip())
+                        
+                        if all(k in gemini_result for k in ["patient_summary", "severity_layman", "next_steps_action_plan"]):
+                            return gemini_result
+            except Exception as e:
+                logger.error(f"EducationalAgent Gemini Vision generation error: {e}. Falling back to template.")
+        
+        return fallback_result
 
 
 # ============================================================================
@@ -1177,23 +1242,28 @@ class KnowledgeAgent:
              return None
 
         print(f"[DEBUG] Preparing Gemini prompt for audience='{audience}' with {len(retrieved_docs)} docs.")
-        system_prompt = (
-            "You are the language agent in the MedAI multi-agent system. "
-            "You are given:\n"
-            "1) A structured fracture summary produced by a diagnostic ensemble.\n"
-            "2) Retrieved domain and technical documents from MedAI's curated knowledge base.\n\n"
-            "Your job is to explain the diagnosis and the system behavior using ONLY this context. "
-            "Do not invent new medical facts. Do not give direct medical advice or treatment plans. "
-            "Emphasize that this is informational and does not replace a clinician."
-        )
-
+        
         if audience == "clinician":
-            user_instruction = (
-                "Explain the diagnosis and relevant context to an orthopedic clinician or radiologist. "
-                "Include fracture type, ICD-style coding, likely management options at a high level, "
-                "and how the MedAI ensemble + Grad-CAM contribute to decision support."
+            system_prompt = (
+                "You are an expert orthopedic clinician. Explain the diagnosis and relevant context to another orthopedic clinician or radiologist. "
+                "Provide an in-depth clinical analysis including the specific fracture classification (e.g., AO/OTA), "
+                "exact anatomical location, and accurate ICD-10 coding. Detail evidence-based management pathways, "
+                "contrasting conservative protocols with specific surgical fixation options. Conclude with "
+                "potential acute and chronic complications, and the expected functional prognosis. "
+                "STRICT INSTRUCTION: Focus purely on the medical assessment. Do NOT include any information "
+                "about system behavior, AI architecture, ensemble learning, MedAI, or how the diagnosis was generated."
             )
+            user_instruction = "Provide the detailed clinical analysis based on the context."
         else:
+            system_prompt = (
+                "You are an expert orthopedic clinician. "
+                "You are given:\n"
+                "1) A structured fracture summary.\n"
+                "2) Retrieved domain and technical documents from a curated knowledge base.\n\n"
+                "Your job is to explain the diagnosis using ONLY this context. "
+                "Do not invent new medical facts. Do not give direct medical advice or treatment plans. "
+                "Emphasize that this is informational and does not replace a clinician."
+            )
             user_instruction = (
                 "Explain the diagnosis to a layperson patient. Use simple language to describe what "
                 "the fracture means, roughly how it is treated and what recovery might involve. "
@@ -1204,9 +1274,13 @@ class KnowledgeAgent:
             f"[{d['category']}] {d['title']}\n\n{d['content']}" for d in retrieved_docs
         )
 
+        # Remove the "produced by a diagnostic ensemble" part from the summary string to avoid leaking MedAI info
+        clean_summary = str(summary).replace("MedAI", "").replace("ensemble", "").replace("Ensemble", "")
+        clean_docs_block = docs_block.replace("MedAI", "").replace("ensemble", "").replace("Ensemble", "")
+
         context = (
-            f"Structured summary:\n{summary}\n\n"
-            f"Retrieved MedAI RAG documents:\n\n{docs_block}"
+            f"Structured summary:\n{clean_summary}\n\n"
+            f"Retrieved RAG documents:\n\n{clean_docs_block}"
         )
 
         # Gemini REST API Format
@@ -1690,7 +1764,7 @@ def render_educational_output():
     if st.session_state.educational_output is None:
         return
     
-    st.subheader("📚 Patient Information")
+    st.subheader("📚 Simplified Explanation")
     
     output = st.session_state.educational_output
     
@@ -1698,7 +1772,7 @@ def render_educational_output():
     
     st.markdown(f"**Severity Level:** {output['severity_layman']}")
     
-    st.markdown(output["next_steps_action_plan"])
+    st.markdown(f"**Next Steps / Action Plan:** {output['next_steps_action_plan']}")
 
 
 def render_knowledge_base():
@@ -1733,7 +1807,7 @@ def render_knowledge_base():
     gemini_expl = st.session_state.get("gemini_explanation")
     if gemini_expl:
         st.markdown("---")
-        st.subheader("Detailed Technical Explanation")
+        st.subheader("Detailed Clinical Analysis")
         st.info(gemini_expl)
 
 
@@ -1961,7 +2035,9 @@ def run_analysis(image: Image.Image, config: dict, device):
         edu_agent = EducationalAgent(doctor_name="your healthcare provider")
         st.session_state.educational_output = edu_agent.translate(
             st.session_state.ensemble_result,
-            st.session_state.explanation_text or ""
+            st.session_state.explanation_text or "",
+            image=image,
+            gradcam_image=st.session_state.gradcam_image
         )
     
     # Agent 5: Knowledge Agent
@@ -1991,7 +2067,7 @@ def run_analysis(image: Image.Image, config: dict, device):
                 st.session_state.gemini_explanation = knowledge_agent.generate_explanation_with_gemini(
                     st.session_state.medical_summary,
                     relevant_docs,
-                    audience="patient"
+                    audience="clinician"
                 )
                 print(f"[DEBUG] Gemini explanation result length: {len(st.session_state.gemini_explanation) if st.session_state.gemini_explanation else 'None'}")
             except Exception as e:

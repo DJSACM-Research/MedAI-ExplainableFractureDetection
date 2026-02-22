@@ -21,6 +21,7 @@ import ReliabilityChart from "@/components/medai/ReliabilityChartNew";
 // import ConfusionMatrix from "@/components/medai/ConfusionMatrix";
 import { ChatInterface } from "@/components/medai/ChatInterface";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import Image from "next/image";
 
 interface DiagnosisResponse {
@@ -84,8 +85,15 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
   densenet169: "DenseNet169",
 };
 
-// Models whose architecture doesn't support Grad-CAM
-const GRADCAM_EXCLUDED_MODELS = new Set(["yolo", "yolov26m", "rad_dino"]);
+// Models that use alternative visualization methods (no longer excluded)
+const GRADCAM_EXCLUDED_MODELS = new Set<string>([]);
+
+// Map model names to their visualization type for labelling
+const MODEL_VIZ_TYPE: Record<string, string> = {
+  yolo: "Saliency",
+  yolov26m: "Saliency",
+  rad_dino: "Attention",
+};
 
 function getModelDisplayName(key: string): string {
   return MODEL_DISPLAY_NAMES[key.toLowerCase()] || key;
@@ -568,13 +576,11 @@ export default function DiagnosePage() {
                     </CardHeader>
                     <CardContent>
                       <div className="text-3xl font-bold">
-                        {result.educational.severity_layman.split(" ")[0]}
-                        <span className="text-base font-normal text-muted-foreground ml-2">
-                          ({result.knowledge_base.Severity_Rating || "Unknown"})
-                        </span>
+                        {result.knowledge_base.Severity_Rating || "Unknown"}
                       </div>
                       <p className="text-muted-foreground mt-1 text-sm">
-                        {result.knowledge_base.Type_Definition}
+                        {result.educational.severity_layman ||
+                          result.knowledge_base.Type_Definition}
                       </p>
                     </CardContent>
                   </Card>
@@ -691,21 +697,8 @@ export default function DiagnosePage() {
                       (result as any).explanation.per_model_heatmaps ? (
                         <div className="space-y-3">
                           <div className="text-sm text-muted-foreground">
-                            Per-model Grad-CAMs:
+                            Per-model Visualizations:
                           </div>
-                          {/* Note about excluded models */}
-                          {result.prediction.individual_model_predictions &&
-                            Object.keys(
-                              result.prediction.individual_model_predictions,
-                            ).some((k) =>
-                              GRADCAM_EXCLUDED_MODELS.has(k.toLowerCase()),
-                            ) && (
-                              <div className="text-xs text-muted-foreground bg-muted/30 p-2 rounded flex items-center gap-1">
-                                <AlertCircle className="h-3 w-3" />
-                                YOLO and RAD-DINO models are excluded from
-                                Grad-CAM due to architectural incompatibility.
-                              </div>
-                            )}
                           <div className="grid grid-cols-2 gap-3">
                             {Object.entries(
                               (result as any).explanation.per_model_heatmaps,
@@ -834,7 +827,9 @@ export default function DiagnosePage() {
                         )
                       )}
                       <div className="text-sm leading-relaxed text-muted-foreground">
-                        <ReactMarkdown>{result.explanation.text}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {result.explanation.text}
+                        </ReactMarkdown>
                       </div>
                     </CardContent>
                   </Card>
@@ -842,39 +837,110 @@ export default function DiagnosePage() {
                   <ProbabilityChart
                     probabilities={result.prediction.all_probabilities}
                   />
-                  {result.metrics &&
-                    result.metrics.top1_vs_top2_margin !== undefined && (
-                      <div className="mt-2 w-full">
-                        <div className="text-sm text-muted-foreground mb-2">
-                          <strong>Top-1 vs Top-2 margin:</strong>{" "}
-                          {(result.metrics.top1_vs_top2_margin * 100).toFixed(
-                            2,
-                          )}
-                          %
-                        </div>
-                        <div
-                          className={`${
-                            medicalLight
-                              ? "w-full bg-neutral-200 rounded h-3"
-                              : "w-full bg-neutral-800 rounded h-3"
-                          }`}
-                        >
+                  {/* Left column: Top-1 margin + Individual Model Predictions */}
+                  <div>
+                    {result.metrics &&
+                      result.metrics.top1_vs_top2_margin !== undefined && (
+                        <div className="mt-2 w-full">
+                          <div className="text-sm text-muted-foreground mb-2">
+                            <strong>Top-1 vs Top-2 margin:</strong>{" "}
+                            {(result.metrics.top1_vs_top2_margin * 100).toFixed(
+                              2,
+                            )}
+                            %
+                          </div>
                           <div
-                            className="h-3 rounded bg-gradient-to-r from-green-500 to-yellow-400"
-                            style={{
-                              width: `${Math.min(
-                                100,
-                                (result.metrics.top1_vs_top2_margin || 0) * 100,
-                              )}%`,
-                            }}
-                          />
+                            className={`${
+                              medicalLight
+                                ? "w-full bg-neutral-200 rounded h-3"
+                                : "w-full bg-neutral-800 rounded h-3"
+                            }`}
+                          >
+                            <div
+                              className="h-3 rounded bg-gradient-to-r from-green-500 to-yellow-400"
+                              style={{
+                                width: `${Math.min(
+                                  100,
+                                  (result.metrics.top1_vs_top2_margin || 0) *
+                                    100,
+                                )}%`,
+                              }}
+                            />
+                          </div>
+                          <div className="text-xs text-muted-foreground mt-1">
+                            A higher margin indicates more separation between
+                            the top two classes and higher model confidence.
+                          </div>
                         </div>
-                        <div className="text-xs text-muted-foreground mt-1">
-                          A higher margin indicates more separation between the
-                          top two classes and higher model confidence.
+                      )}
+
+                    {/* Individual Model Predictions */}
+                    {result.prediction.individual_model_predictions && (
+                      <details
+                        className={`mt-4 border rounded p-3 ${
+                          medicalLight
+                            ? "bg-white/5 border-neutral-200"
+                            : "bg-neutral-900/5"
+                        }`}
+                      >
+                        <summary className="cursor-pointer font-medium">
+                          Individual Model Predictions
+                        </summary>
+                        <div className="mt-2 text-sm">
+                          <div className="grid gap-2 mt-2">
+                            {Object.entries(
+                              result.prediction.individual_model_predictions,
+                            ).map(([m, info]: any) => {
+                              const badge = getModelBadge(m);
+                              return (
+                                <div
+                                  key={m}
+                                  className={`flex items-center justify-between gap-4 py-2 px-2 ${
+                                    medicalLight
+                                      ? "bg-white/5"
+                                      : "bg-neutral-900/10"
+                                  } rounded`}
+                                >
+                                  <div className="min-w-0">
+                                    <div className="font-medium truncate flex items-center gap-2">
+                                      {getModelDisplayName(m)}
+                                      {badge && (
+                                        <span
+                                          className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${badge.color}`}
+                                        >
+                                          {badge.label}
+                                        </span>
+                                      )}
+                                      {GRADCAM_EXCLUDED_MODELS.has(
+                                        m.toLowerCase(),
+                                      ) && (
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-neutral-500/20 text-neutral-400 font-medium">
+                                          No Grad-CAM
+                                        </span>
+                                      )}
+                                      {MODEL_VIZ_TYPE[m.toLowerCase()] && (
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 font-medium">
+                                          {MODEL_VIZ_TYPE[m.toLowerCase()]}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground truncate max-w-[60ch]">
+                                      {info.class}
+                                    </div>
+                                  </div>
+                                  <div className="ml-4 flex-shrink-0 text-right">
+                                    <div className="text-sm font-semibold">
+                                      {(info.confidence * 100).toFixed(2)}%
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
+                      </details>
                     )}
+                  </div>
 
                   {reliabilityData && (
                     <Card className="mt-4">
@@ -912,67 +978,6 @@ export default function DiagnosePage() {
                       </CardContent>
                     </Card>
                   )}
-                  {/* Individual Model Predictions */}
-                  {result.prediction.individual_model_predictions && (
-                    <details
-                      className={`mt-4 border rounded p-3 ${
-                        medicalLight
-                          ? "bg-white/5 border-neutral-200"
-                          : "bg-neutral-900/5"
-                      }`}
-                    >
-                      <summary className="cursor-pointer font-medium">
-                        Individual Model Predictions
-                      </summary>
-                      <div className="mt-2 text-sm">
-                        <div className="grid gap-2 mt-2">
-                          {Object.entries(
-                            result.prediction.individual_model_predictions,
-                          ).map(([m, info]: any) => {
-                            const badge = getModelBadge(m);
-                            return (
-                              <div
-                                key={m}
-                                className={`flex items-center justify-between gap-4 py-2 px-2 ${
-                                  medicalLight
-                                    ? "bg-white/5"
-                                    : "bg-neutral-900/10"
-                                } rounded`}
-                              >
-                                <div className="min-w-0">
-                                  <div className="font-medium truncate flex items-center gap-2">
-                                    {getModelDisplayName(m)}
-                                    {badge && (
-                                      <span
-                                        className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${badge.color}`}
-                                      >
-                                        {badge.label}
-                                      </span>
-                                    )}
-                                    {GRADCAM_EXCLUDED_MODELS.has(
-                                      m.toLowerCase(),
-                                    ) && (
-                                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-neutral-500/20 text-neutral-400 font-medium">
-                                        No Grad-CAM
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="text-xs text-muted-foreground truncate max-w-[60ch]">
-                                    {info.class}
-                                  </div>
-                                </div>
-                                <div className="ml-4 flex-shrink-0 text-right">
-                                  <div className="text-sm font-semibold">
-                                    {(info.confidence * 100).toFixed(2)}%
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </details>
-                  )}
                 </div>
 
                 {/* Gemini AI Explanation */}
@@ -987,17 +992,19 @@ export default function DiagnosePage() {
                     <CardHeader>
                       <CardTitle className="flex items-center gap-2 text-lg">
                         <span className="text-2xl">
-                          Detailed Technical Explanation
+                          Detailed Clinical Analysis
                         </span>{" "}
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
                       <div
-                        className={`prose max-w-none text-sm ${
-                          medicalLight ? "text-indigo-900" : "text-indigo-100"
-                        }`}
+                        className={`prose prose-sm md:prose-base max-w-none ${
+                          medicalLight
+                            ? "text-indigo-900 prose-headings:text-indigo-800 prose-strong:text-indigo-900 prose-li:text-indigo-900 prose-p:text-indigo-900"
+                            : "prose-invert text-indigo-100 prose-headings:text-indigo-50 prose-strong:text-indigo-50 prose-li:text-indigo-200 prose-p:text-indigo-200"
+                        } prose-headings:font-semibold prose-headings:mt-6 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5`}
                       >
-                        <ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {result.knowledge_base.gemini_explanation}
                         </ReactMarkdown>
                       </div>
@@ -1009,7 +1016,7 @@ export default function DiagnosePage() {
                 <div className="grid md:grid-cols-2 gap-8">
                   <Card className="h-full">
                     <CardHeader>
-                      <CardTitle>Patient Summary & Action Plan</CardTitle>
+                      <CardTitle>Simplified Explanation</CardTitle>
                     </CardHeader>
                     <CardContent
                       className={`prose max-w-none text-sm space-y-4 ${
@@ -1023,19 +1030,32 @@ export default function DiagnosePage() {
                             : "bg-blue-500/10 border border-blue-500/20 text-blue-200"
                         } p-4 rounded-lg`}
                       >
-                        <ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {result.educational.patient_summary}
                         </ReactMarkdown>
                       </div>
-                      <div>
-                        {/* <div className="font-medium mb-2">
-                          Recommended Actions:
-                        </div> */}
-                        <div className="ml-4 text-sm space-y-1">
-                          {/* Render next steps as markdown to allow lists/bold */}
-                          <ReactMarkdown>
-                            {result.educational.next_steps_action_plan}
-                          </ReactMarkdown>
+                      <div className="not-prose">
+                        <h3
+                          className={`text-lg font-semibold mt-4 mb-2 ${medicalLight ? "text-slate-900" : "text-white"}`}
+                        >
+                          Next Steps / Action Plan
+                        </h3>
+                        <div
+                          className={`${
+                            medicalLight
+                              ? "bg-blue-50 border border-blue-200 text-slate-800"
+                              : "bg-blue-500/10 border border-blue-500/20 text-blue-200"
+                          } p-4 rounded-lg`}
+                        >
+                          <div
+                            className={`prose max-w-none text-sm ${
+                              medicalLight ? "" : "prose-invert"
+                            }`}
+                          >
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {result.educational.next_steps_action_plan}
+                            </ReactMarkdown>
+                          </div>
                         </div>
                       </div>
                     </CardContent>
