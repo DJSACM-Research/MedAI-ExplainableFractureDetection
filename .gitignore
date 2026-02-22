@@ -9,6 +9,7 @@ __pycache__/
 outputs/inference_logs
 
 balanced_augmented_dataset/
+paper/
 
 # Secrets (DO NOT commit real API keys)
 .streamlit/secrets.toml
