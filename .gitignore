@@ -10,6 +10,7 @@ outputs/inference_logs
 
 balanced_augmented_dataset/
 paper/
+outputs/figures/*.pdf
 
 # Secrets (DO NOT commit real API keys)
 .streamlit/secrets.toml
