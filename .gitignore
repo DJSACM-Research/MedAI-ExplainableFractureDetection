@@ -9,6 +9,9 @@ __pycache__/
 outputs/inference_logs
 
 balanced_augmented_dataset/
+roboflow_dataset/
+FracAtlas/
+
 paper/
 outputs/figures/*.pdf
 

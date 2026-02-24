@@ -96,16 +96,18 @@ def get_transforms(img_size: int = 224):
 def _swap_prediction_label(label: str) -> str:
     """
     Swaps predictions for specific classes as requested:
-    Transverse <-> Transverse Displaced
-    Oblique <-> Oblique Displaced
+    Transverse <-> Transverse_Displaced
+    Oblique <-> Oblique_Displaced
     """
+    # Normalize spaces to underscores
+    label = label.replace(" ", "_")
     if label == "Transverse":
-        return "Transverse Displaced"
-    elif label == "Transverse Displaced":
+        return "Transverse_Displaced"
+    elif label == "Transverse_Displaced":
         return "Transverse"
     elif label == "Oblique":
-        return "Oblique Displaced"
-    elif label == "Oblique Displaced":
+        return "Oblique_Displaced"
+    elif label == "Oblique_Displaced":
         return "Oblique"
     return label
 
@@ -117,7 +119,7 @@ RAD_DINO_MODEL_NAME = "microsoft/rad-dino"
 
 CLASS_NAMES = [
     "Comminuted", "Greenstick", "Healthy", "Oblique",
-    "Oblique Displaced", "Spiral", "Transverse", "Transverse Displaced"
+    "Oblique_Displaced", "Spiral", "Transverse", "Transverse_Displaced"
 ]
 
 YOLO_SEARCH_PATHS = [
@@ -218,7 +220,7 @@ class EnsembleModule:
     """Runs inference across multiple models and combines predictions."""
     
     # Classes where hypercolumn models should get more weight
-    HYPERCOLUMN_PRIORITY_CLASSES = {"Oblique", "Oblique Displaced", "Transverse", "Transverse Displaced"}
+    HYPERCOLUMN_PRIORITY_CLASSES = {"Oblique", "Oblique_Displaced", "Transverse", "Transverse_Displaced"}
     # Weight for hypercolumn models when priority class is detected
     HYPERCOLUMN_WEIGHT = 1.0
     # Weight for other models
@@ -261,10 +263,18 @@ class EnsembleModule:
                     if not TRANSFORMERS_AVAILABLE:
                         print(f"  ⚠️ Skipping {name}: transformers not installed.")
                         continue
+                    # Try multiple checkpoint paths
                     ckpt_path = os.path.join(checkpoints_dir, "best_rad_dino_classifier.pth")
-                    if not os.path.exists(ckpt_path):
-                        print(f"  ❌ RAD-DINO checkpoint not found at {ckpt_path}. Skipping.")
+                    alt_ckpt_path = os.path.join(os.path.dirname(checkpoints_dir), "dinorad", "dinorad_best.pth")
+                    
+                    if os.path.exists(ckpt_path):
+                        pass  # Use default path
+                    elif os.path.exists(alt_ckpt_path):
+                        ckpt_path = alt_ckpt_path
+                    else:
+                        print(f"  ❌ RAD-DINO checkpoint not found at {ckpt_path} or {alt_ckpt_path}. Skipping.")
                         continue
+                    
                     sd = torch.load(ckpt_path, map_location=self.device)
                     state_dict = sd.get("model_state_dict", sd)
                     head_type = _detect_rad_dino_head_type(state_dict)
