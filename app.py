@@ -9,7 +9,10 @@ import tempfile
 import cv2
 
 # Add src to path so package imports work
+
+# Add scripts/visualization to path for visualize_xgradcam import
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "visualization"))
 
 # Import project modules
 from medai.agents.educational_agent import EducationalAgent

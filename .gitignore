@@ -8,9 +8,27 @@ __pycache__/
 
 outputs/inference_logs
 
+# ─── Datasets (images only — CSVs are tracked) ───
 balanced_augmented_dataset/
+data/bone_break_classification/
+data/fracatlas/images/
+data/roboflow_dataset/
+data/test_images/
+data/balanced_augmented_dataset/
+
+# Legacy root-level dataset paths (in case they reappear)
 roboflow_dataset/
 FracAtlas/
+
+# Temporary upload images
+temp_upload_*
+
+# Vector databases
+chroma_db/
+notebooks/chroma_db/
+
+# YOLO training runs
+runs/
 
 paper/
 outputs/figures/*.pdf
@@ -22,6 +40,7 @@ outputs/figures/*.pdf
 models/
 updated_models/
 *.pth
+*.pt
 
 # Outputs
 outputs/analysis

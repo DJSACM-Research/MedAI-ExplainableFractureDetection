@@ -1549,7 +1549,7 @@ def render_sidebar():
     use_conformal = st.sidebar.checkbox("Enable conformal prediction", value=False,
                                         help="Include conformal prediction sets in outputs")
     conformal_threshold_path = st.sidebar.text_input(
-        "Threshold file (optional)", value="./outputs/conformal_threshold.txt",
+        "Threshold file (optional)", value="./outputs/conformal/conformal_threshold.txt",
         help="Path to a text file containing a single float threshold value (nonconformity t)."
     )
     conformal_threshold_value = st.sidebar.number_input(
@@ -2170,8 +2170,8 @@ def main():
     config = render_sidebar()
     # Ensemble mode selection
     ensemble_mode = st.sidebar.selectbox("Ensemble Mode", options=["weighted", "stacking"], index=0,
-                                         help="Choose 'stacking' to use a trained meta-classifier saved at outputs/stacker.joblib")
-    stacker_path = st.sidebar.text_input("Stacker path", value="outputs/stacker.joblib")
+                                         help="Choose 'stacking' to use a trained meta-classifier saved at outputs/ensemble/stacker.joblib")
+    stacker_path = st.sidebar.text_input("Stacker path", value="outputs/ensemble/stacker.joblib")
     config['ensemble_mode'] = ensemble_mode
     config['stacker_path'] = stacker_path
     
