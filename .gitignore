@@ -11,6 +11,7 @@ outputs/inference_logs
 balanced_augmented_dataset/
 roboflow_dataset/
 FracAtlas/
+data/
 
 paper/
 outputs/figures/*.pdf
