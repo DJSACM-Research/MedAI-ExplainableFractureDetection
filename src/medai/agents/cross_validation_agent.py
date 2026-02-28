@@ -7,7 +7,10 @@ import numpy as np
 from PIL import Image
 from typing import List, Dict, Any
 import timm 
-from medai.uncertainty.conformal import predict_conformal_set
+try:
+    from medai.uncertainty.conformal import predict_conformal_set
+except Exception:
+    from ..uncertainty.conformal import predict_conformal_set
 
 # ----------------------------------------------------------------------
 # --- Helper Functions ---

@@ -1,9 +1,12 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 # 1. Configuration
 model_id = "google/medgemma-1.5-4b-it"
-hf_token = "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" # Use your token here
+hf_token = os.getenv("HF_TOKEN") 
 
 print(f"Loading {model_id}...")
 

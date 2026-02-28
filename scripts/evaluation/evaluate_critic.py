@@ -154,6 +154,10 @@ def main():
     parser.add_argument('--out-dir', default='outputs')
     parser.add_argument('--fig-dir', default='outputs/figures')
     parser.add_argument('--delay', type=float, default=0.5, help='Delay between API calls (secs)')
+    parser.add_argument('--use-hybrid', action='store_true', help='Use hybrid decision rule (critic + conformal + ensemble signals)')
+    parser.add_argument('--margin-threshold', type=float, default=0.15, help='Top1-top2 margin below which prediction is treated as ambiguous')
+    parser.add_argument('--confidence-threshold', type=float, default=0.6, help='Ensemble confidence below which critic will tend to reject/uncertain')
+    parser.add_argument('--conformal-threshold', type=float, default=None, help='Optional calibrated conformal threshold (nonconformity t); when provided, used to compute conformal set')
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -257,7 +261,48 @@ def main():
             }
 
         is_correct = pred_class == true_class
-        verdict = critic_result.get('verdict', 'uncertain')
+        raw_critic_verdict = critic_result.get('verdict', 'uncertain')
+
+        # --- Hybrid decision rule (optional) ---
+        final_verdict = raw_critic_verdict
+        # compute ensemble ambiguity signals
+        sorted_probs = np.sort(avg_probs)[::-1]
+        top1 = float(sorted_probs[0])
+        top2 = float(sorted_probs[1]) if len(sorted_probs) > 1 else 0.0
+        margin = top1 - top2
+
+        # If conformal threshold provided, compute conformal set and check membership
+        conformal_set = None
+        if args.conformal_threshold is not None:
+            try:
+                conformal_set = predict_conformal_set(avg_probs, args.conformal_threshold, app.CLASS_NAMES)
+            except Exception:
+                conformal_set = None
+
+        if args.use_hybrid:
+            # 1) If Critic explicitly rejects -> final 'no'
+            if raw_critic_verdict == 'no':
+                final_verdict = 'no'
+            else:
+                # 2) If Critic provided an independent top diagnosis that differs and is confident -> reject
+                c_top = critic_result.get('top_diagnosis')
+                c_top_conf = critic_result.get('top_diagnosis_confidence', critic_result.get('critic_confidence', 0.0))
+                if c_top and c_top.lower() != pred_class.lower() and c_top_conf >= 0.6:
+                    final_verdict = 'no'
+                # 3) If conformal set is provided and does not include the predicted class -> reject
+                elif conformal_set is not None and pred_class not in conformal_set:
+                    final_verdict = 'no'
+                # 4) If ensemble confidence is very low -> mark uncertain/reject
+                elif pred_conf < args.confidence_threshold:
+                    final_verdict = 'uncertain'
+                # 5) If margin is small (ambiguous top-2) -> mark uncertain
+                elif margin < args.margin_threshold:
+                    final_verdict = 'uncertain'
+                else:
+                    final_verdict = 'yes'
+
+        # Expose final verdict separately while keeping original critic fields
+        verdict = final_verdict
 
         sample_result = {
             'index': i,
@@ -266,10 +311,16 @@ def main():
             'pred_class': pred_class,
             'pred_confidence': pred_conf,
             'is_correct': is_correct,
-            'critic_verdict': verdict,
+            'critic_verdict': critic_result.get('verdict', 'uncertain'),
             'critic_confidence': critic_result.get('critic_confidence', 0.0),
             'critic_explanation': critic_result.get('explanation', ''),
             'flagged_for_human': critic_result.get('flagged_for_human', False),
+            # Hybrid / post-processed decision (may differ from raw critic)
+            'final_verdict': verdict,
+            'final_flagged_for_human': True if verdict in ['no', 'uncertain'] else False,
+            'conformal_set': conformal_set,
+            'ensemble_margin': margin,
+            'ensemble_top_confidence': pred_conf,
         }
         results.append(sample_result)
 
@@ -290,16 +341,20 @@ def main():
     raw_accuracy = len(correct_preds) / total if total > 0 else 0
 
     # Critic verdict counts
-    confirmed = [r for r in results if r['critic_verdict'] == 'yes']
-    rejected = [r for r in results if r['critic_verdict'] == 'no']
-    uncertain = [r for r in results if r['critic_verdict'] == 'uncertain']
+    # Prefer final post-processed verdict if available
+    def _get_verdict(r):
+        return r.get('final_verdict', r.get('critic_verdict', 'uncertain'))
+
+    confirmed = [r for r in results if _get_verdict(r) == 'yes']
+    rejected = [r for r in results if _get_verdict(r) == 'no']
+    uncertain = [r for r in results if _get_verdict(r) == 'uncertain']
 
     # True rejection rate: among wrong predictions, how often does critic reject?
-    wrong_rejected = [r for r in wrong_preds if r['critic_verdict'] == 'no']
+    wrong_rejected = [r for r in wrong_preds if _get_verdict(r) == 'no']
     true_rejection_rate = len(wrong_rejected) / len(wrong_preds) if wrong_preds else 0
 
     # False rejection rate: among correct predictions, how often does critic reject?
-    correct_rejected = [r for r in correct_preds if r['critic_verdict'] == 'no']
+    correct_rejected = [r for r in correct_preds if _get_verdict(r) == 'no']
     false_rejection_rate = len(correct_rejected) / len(correct_preds) if correct_preds else 0
 
     # Uncertainty rate: fraction flagged as uncertain

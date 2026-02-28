@@ -7,7 +7,12 @@ import timm
 from PIL import Image
 import numpy as np
 from typing import Dict, Any, List
-from medai.uncertainty.conformal import predict_conformal_set
+try:
+    # Prefer package-style import when installed as top-level package
+    from medai.uncertainty.conformal import predict_conformal_set
+except Exception:
+    # Fallback to relative import when running from the repository (src in path)
+    from ..uncertainty.conformal import predict_conformal_set
 
 # --- 1. CONFIGURATION ---
 
