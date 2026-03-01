@@ -1,6 +1,6 @@
-# MedAI Website
+# Project Website
 
-The official web interface for the MedAI Fracture Detection System. Built with Next.js 14, Tailwind CSS, and Shadcn UI.
+The official web interface for the fracture detection system. Built with Next.js 14, Tailwind CSS, and Shadcn UI.
 
 ## Local Development
 
@@ -26,7 +26,7 @@ This frontend requires a running Python backend to perform inference using the c
 **Example `.env.local`:**
 
 ```
-BACKEND_URL=https://huggingface.co/spaces/username/medai-fracture-backend
+BACKEND_URL=https://huggingface.co/spaces/username/fracture-backend
 ```
 
 ## Backend feature notes

@@ -16,6 +16,9 @@ data/roboflow_dataset/
 data/test_images/
 data/balanced_augmented_dataset/
 
+backend_hf/outputs/
+outputs/val_calib.npz
+
 # Legacy root-level dataset paths (in case they reappear)
 roboflow_dataset/
 FracAtlas/

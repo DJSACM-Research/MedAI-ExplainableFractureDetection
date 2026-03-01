@@ -11,6 +11,7 @@ requests
 chromadb
 sentence-transformers
 python-dotenv
+reportlab
 
 # MedGemma / Critic Agent
 transformers>=4.38.0

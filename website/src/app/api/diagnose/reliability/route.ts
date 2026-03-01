@@ -6,19 +6,27 @@ export async function GET(req: NextRequest) {
 
     // Try configured backend, fallback to local; if both fail, return a safe fallback
     let response: Response | null = null;
+    let backendError: string | null = null;
     try {
       response = await fetch(`${BACKEND_URL}/diagnose/reliability`);
-      if (!response.ok)
-        throw new Error(`Primary ${BACKEND_URL} responded ${response.status}`);
+      if (!response.ok) {
+        // attempt to read backend error body for debugging
+        let txt = await response.text().catch(() => "");
+        backendError = `Primary ${BACKEND_URL} responded ${response.status}: ${txt}`;
+        throw new Error(backendError);
+      }
     } catch (e) {
       console.warn(
         `Primary backend ${BACKEND_URL} failed; trying http://127.0.0.1:7860`,
-        e
+        e,
       );
       try {
         response = await fetch(`http://127.0.0.1:7860/diagnose/reliability`);
-        if (!response.ok)
-          throw new Error(`Local backend responded ${response.status}`);
+        if (!response.ok) {
+          let txt = await response.text().catch(() => "");
+          backendError = `Local backend responded ${response.status}: ${txt}`;
+          throw new Error(backendError);
+        }
       } catch (e2) {
         console.warn("Local backend fetch failed", e2);
         // Return a harmless fallback so the UI can render with sample reliability data
@@ -32,6 +40,7 @@ export async function GET(req: NextRequest) {
           confusion_matrix: [[0]],
           class_labels: ["class0", "class1"],
           _fallback: true,
+          _backend_error: backendError,
         };
         return NextResponse.json(fallback);
       }
@@ -49,9 +58,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(data);
     } catch (err) {
       console.error("Failed to parse backend reliability JSON", err);
+      // include backend error text if available
       return NextResponse.json(
-        { error: "Invalid backend response" },
-        { status: 502 }
+        { error: "Invalid backend response", _backend_error: backendError },
+        { status: 502 },
       );
     }
   } catch (err) {

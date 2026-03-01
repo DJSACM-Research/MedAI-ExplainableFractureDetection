@@ -29,6 +29,7 @@ opencv-python-headless>=4.8.0
 grad-cam>=1.4.8
 pandas>=2.0.0
 matplotlib>=3.7.0
+reportlab>=4.4.10
 
 # MedGemma / Critic Agent
 transformers>=4.38.0

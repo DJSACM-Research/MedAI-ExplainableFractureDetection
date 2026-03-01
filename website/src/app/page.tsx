@@ -15,9 +15,9 @@ export default function Home() {
     <div className="flex flex-col min-h-screen bg-background">
       {/* Hero Section */}
       <header className="px-6 lg:px-12 h-20 flex items-center justify-between border-b border-white/10 backdrop-blur-md sticky top-0 z-50">
-        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
           <Activity className="h-6 w-6 text-blue-500" />
-          <span className="font-bold text-xl tracking-tight">MedAI</span>
+          <span className="font-bold text-xl tracking-tight">Fracture Detection AI</span>
         </div>
         <nav className="hidden md:flex gap-8 text-sm font-medium text-muted-foreground">
           <Link href="#features" className="hover:text-white transition-colors">
@@ -29,13 +29,9 @@ export default function Home() {
           >
             How it Works
           </Link>
-          <Link
-            href="https://github.com/DJSACM-Research/MedAI-ExplainableFractureDetection"
-            target="_blank"
-            className="hover:text-white transition-colors"
-          >
+          {/* <Link href="#" className="hover:text-white transition-colors">
             GitHub
-          </Link>
+          </Link> */}
         </nav>
         <Link href="/diagnose">
           <Button
@@ -90,7 +86,7 @@ export default function Home() {
         <section id="features" className="py-24 px-6 lg:px-12 bg-black/20">
           <div className="max-w-6xl mx-auto">
             <div className="text-center mb-16 space-y-4">
-              <h2 className="text-3xl md:text-4xl font-bold">Why MedAI?</h2>
+              <h2 className="text-3xl md:text-4xl font-bold">Why This System?</h2>
               <p className="text-muted-foreground max-w-2xl mx-auto">
                 Our system uses a novel multi-agent architecture to provide more
                 than just a prediction. It explains, educates, and answers your
@@ -187,7 +183,7 @@ export default function Home() {
       </main>
 
       <footer className="py-8 border-t border-white/10 text-center text-muted-foreground text-sm">
-        <p>© 2026 MedAI Research. Created with love by the DJSCE-ACM Team.</p>
+        <p>© 2026 Anonymized. Created by a research team.</p>
       </footer>
     </div>
   );

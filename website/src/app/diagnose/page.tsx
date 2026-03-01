@@ -85,8 +85,13 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
   densenet169: "DenseNet169",
 };
 
-// Models that use alternative visualization methods (no longer excluded)
-const GRADCAM_EXCLUDED_MODELS = new Set<string>([]);
+// Models whose architecture doesn't support Grad-CAM
+const GRADCAM_EXCLUDED_MODELS = new Set<string>([
+  "yolo",
+  "yolov26m",
+  "yolov26",
+  "rad_dino",
+]);
 
 // Map model names to their visualization type for labelling
 const MODEL_VIZ_TYPE: Record<string, string> = {
@@ -315,7 +320,7 @@ export default function DiagnosePage() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "medai_diagnosis_report.pdf";
+      a.download = "diagnosis_report.pdf";
       document.body.appendChild(a);
       a.click();
       a.remove();
