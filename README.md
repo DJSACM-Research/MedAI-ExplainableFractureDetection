@@ -10,16 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="https://cvpr-submission-fracture-ai.vercel.app"><strong>Live Demo</strong></a> ·
-  <a href="outputs/reports/MACDSS_Rubric.pdf"><strong>Clinician Evaluation Rubric</strong></a> ·
+  <a href="https://cvpr-submission-mac-dss.vercel.app"><strong>Live Demo</strong></a> ·
+  <a href="https://cvpr-submission-mac-dss.vercel.app/rubric"><strong>Clinician Evaluation Rubric</strong></a> ·
   <a href="outputs/reports/diagnosis_report.pdf"><strong>Technical Report</strong></a>
 </p>
 
 A modular medical imaging AI system for bone fracture detection combining a **4-model stacked ensemble**, **Grad-CAM explainability**, **RAG-grounded clinical context**, a **VLM-based Critic Agent**, and **conformal prediction** to produce human-verifiable orthopedic diagnoses.
-
-<p align="center">
-  <img src="diagrams/architecture-diagram.png" alt="End-to-end system architecture" width="100%">
-</p>
 
 ---
 
@@ -52,7 +48,7 @@ MedAI is designed to assist healthcare professionals and patients in understandi
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Live Website                | [cvpr-submission-mac-dss.vercel.app](https://cvpr-submission-mac-dss.vercel.app)                                                                       |
 | Code Repository             | [github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS](https://github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS) |
-| Clinician Evaluation Rubric | [`outputs/reports/MACDSS_Rubric.pdf`](outputs/reports/MAC_DSS_Rubric.pdf)                                                                              |
+| Clinician Evaluation Rubric | [cvpr-submission-mac-dss.vercel.app/rubric](https://cvpr-submission-mac-dss.vercel.app/rubric)                                               |
 | Technical Report PDF        | [`outputs/reports/diagnosis_report.pdf`](outputs/reports/diagnosis_report.pdf)                                                                         |
 
 ## System Architecture
