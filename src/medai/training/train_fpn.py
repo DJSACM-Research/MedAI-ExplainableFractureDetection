@@ -161,7 +161,7 @@ def validate(model, loader, criterion, device):
     return running_loss / len(loader.dataset), accuracy_score(all_targets, all_preds), (p, r, f1)
 
 def main():
-    root_dir = r"c:\Users\hardi\OneDrive\Desktop\MedAIExplainableFractureDetection"
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
     data_dir = os.path.join(root_dir, "balanced_augmented_dataset")
     train_csv = os.path.join(data_dir, "train.csv")
     val_csv = os.path.join(data_dir, "val.csv")

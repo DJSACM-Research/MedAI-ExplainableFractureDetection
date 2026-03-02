@@ -48,7 +48,7 @@ MedAI is designed to assist healthcare professionals and patients in understandi
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Live Website                | [cvpr-submission-mac-dss.vercel.app](https://cvpr-submission-mac-dss.vercel.app)                                                                       |
 | Code Repository             | [github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS](https://github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS) |
-| Clinician Evaluation Rubric | [cvpr-submission-mac-dss.vercel.app/rubric](https://cvpr-submission-mac-dss.vercel.app/rubric)                                               |
+| Clinician Evaluation Rubric | [cvpr-submission-mac-dss.vercel.app/rubric](https://cvpr-submission-mac-dss.vercel.app/rubric)                                                         |
 | Technical Report PDF        | [`outputs/reports/diagnosis_report.pdf`](outputs/reports/diagnosis_report.pdf)                                                                         |
 
 ## System Architecture
@@ -621,7 +621,7 @@ Pages: `/` (landing), `/diagnose` (inference UI with per-model Grad-CAM toggle),
 cd website && npm run build && npm start
 ```
 
-Deployed on **Vercel** at [cvpr-submission-fracture-ai.vercel.app](https://cvpr-submission-fracture-ai.vercel.app).
+Deployed on **Vercel** at [cvpr-submission-mac-dss.vercel.app](https://cvpr-submission-mac-dss.vercel.app).
 
 ### Backend (`backend_hf/`)
 

@@ -157,7 +157,11 @@ export default function Home() {
                   <ExternalLink className="h-4 w-4" /> Live Demo
                 </Button>
               </Link>
-              <a href="#" target="_blank" rel="noopener noreferrer">
+              <a
+                href="https://github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
                 <Button
                   variant="outline"
                   className="border-slate-600 text-slate-300 hover:bg-slate-800 gap-2"
@@ -975,7 +979,7 @@ export default function Home() {
                 </p>
               </Link>
               <a
-                href="#"
+                href="https://github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="group border border-slate-700 bg-slate-900/60 hover:border-slate-500 hover:bg-slate-800/60 rounded-lg p-6 text-center space-y-2 transition-all"
@@ -983,7 +987,7 @@ export default function Home() {
                 <Github className="h-6 w-6 mx-auto text-slate-400 group-hover:scale-110 transition-transform" />
                 <p className="font-semibold text-slate-200">Code Repository</p>
                 <p className="text-xs text-slate-500">
-                  Anonymous repository (link coming soon)
+                  View anonymous source code
                 </p>
               </a>
               <Link

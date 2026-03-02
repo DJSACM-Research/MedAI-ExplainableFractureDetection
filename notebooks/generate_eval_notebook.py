@@ -21,7 +21,7 @@ warnings.filterwarnings('ignore')
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Using device: {device}')
 
-dataset_root = r"c:\Users\hardi\OneDrive\Desktop\MedAIExplainableFractureDetection\balanced_augmented_dataset\test"
+dataset_root = os.path.join(os.path.abspath("."), "balanced_augmented_dataset", "test")
 classes = sorted(os.listdir(dataset_root))
 print("Classes:", classes)
 
@@ -64,7 +64,7 @@ try:
     model_maxvit = timm.create_model('maxvit_rmlp_small_rw_224.sw_in1k', pretrained=False)
     model_maxvit.head = nn.Linear(model_maxvit.head.in_features, 8)
     
-    ck = torch.load(r'c:\Users\hardi\OneDrive\Desktop\MedAIExplainableFractureDetection\outputs\cross_validation\best_maxvit.pth', map_location='cpu')
+    ck = torch.load(os.path.join(os.path.abspath("."), "outputs", "cross_validation", "best_maxvit.pth"), map_location='cpu')
     model_maxvit.load_state_dict(ck.get('model_state_dict', ck), strict=False)
     model_maxvit.to(device)
     model_maxvit.eval()
@@ -84,13 +84,14 @@ except Exception as e:
 """,
 r"""# 2. Evaluate hypercolumn_cbam_densenet169_focal
 import sys
-if r"c:\Users\hardi\OneDrive\Desktop\MedAIExplainableFractureDetection" not in sys.path:
-    sys.path.insert(0, r"c:\Users\hardi\OneDrive\Desktop\MedAIExplainableFractureDetection")
+_repo_root = os.path.abspath(".")
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 try:
     import visualize_xgradcam as vxc
     model_densenet = vxc.get_model('densenet169', num_classes=8, pretrained=False)
-    ck2 = torch.load(r'c:\Users\hardi\OneDrive\Desktop\MedAIExplainableFractureDetection\outputs\cross_validation\best_hypercolumn_cbam_densenet169_focal.pth', map_location='cpu')
+    ck2 = torch.load(os.path.join(os.path.abspath("."), "outputs", "cross_validation", "best_hypercolumn_cbam_densenet169_focal.pth"), map_location='cpu')
     model_densenet.load_state_dict(ck2.get('model_state_dict', ck2), strict=False)
     model_densenet.to(device)
     model_densenet.eval()
@@ -112,9 +113,9 @@ r"""# 3. Evaluate YOLOv26m-cls (using best.pt from finetuning)
 try:
     from ultralytics import YOLO
 
-    yolo_path = r'c:\Users\hardi\OneDrive\Desktop\MedAIExplainableFractureDetection\outputs\yolo_cls_finetune\yolo_cls_ft\weights\best.pt'
+    yolo_path = os.path.join(os.path.abspath("."), "outputs", "yolo_cls_finetune", "yolo_cls_ft", "weights", "best.pt")
     if not os.path.exists(yolo_path):
-        yolo_path = r'c:\Users\hardi\OneDrive\Desktop\MedAIExplainableFractureDetection\yolov8n-cls.pt' # fallback
+        yolo_path = os.path.join(os.path.abspath("."), "yolov8n-cls.pt")  # fallback
     model_yolo = YOLO(yolo_path)
 
     yolo_names = model_yolo.names
@@ -141,7 +142,7 @@ try:
 
     model_dino = AutoModelForImageClassification.from_pretrained(model_id, num_labels=8, ignore_mismatched_sizes=True)
 
-    pth_path = r'c:\Users\hardi\OneDrive\Desktop\MedAIExplainableFractureDetection\outputs\dinorad\dinorad_best.pth'
+    pth_path = os.path.join(os.path.abspath("."), "outputs", "dinorad", "dinorad_best.pth")
     if os.path.exists(pth_path):
         ck = torch.load(pth_path, map_location='cpu')
         
@@ -197,5 +198,5 @@ for code in code_cells:
 
 nb.cells = cells
 
-with open(r"c:\Users\hardi\OneDrive\Desktop\MedAIExplainableFractureDetection\notebooks\evaluate_models.ipynb", 'w') as f:
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "evaluate_models.ipynb"), 'w') as f:
     nbf.write(nb, f)
