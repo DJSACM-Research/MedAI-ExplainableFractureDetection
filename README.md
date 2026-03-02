@@ -1,4 +1,4 @@
-# MAC-DSS: Multi-Agent Clinical Decision Support System
+# FRAC-MAS: Multi-Agent Clinical Decision Support System
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.11+-blue.svg" alt="Python">
@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://cvpr-submission-mac-dss.vercel.app"><strong>Live Demo</strong></a> ·
-  <a href="https://cvpr-submission-mac-dss.vercel.app/rubric"><strong>Clinician Evaluation Rubric</strong></a> ·
+  <a href="https://cvpr-submission-frac-mas.vercel.app"><strong>Live Demo</strong></a> ·
+  <a href="https://cvpr-submission-frac-mas.vercel.app/rubric"><strong>Clinician Evaluation Rubric</strong></a> ·
   <a href="outputs/reports/diagnosis_report.pdf"><strong>Technical Report</strong></a>
 </p>
 
@@ -46,9 +46,9 @@ MedAI is designed to assist healthcare professionals and patients in understandi
 
 | Resource                    | URL                                                                                                                                                    |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Live Website                | [cvpr-submission-mac-dss.vercel.app](https://cvpr-submission-mac-dss.vercel.app)                                                                       |
-| Code Repository             | [github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS](https://github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS) |
-| Clinician Evaluation Rubric | [cvpr-submission-mac-dss.vercel.app/rubric](https://cvpr-submission-mac-dss.vercel.app/rubric)                                                         |
+| Live Website                | [cvpr-submission-frac-mas.vercel.app](https://cvpr-submission-frac-mas.vercel.app)                                                                       |
+| Code Repository             | [github.com/anonymous-submission-research/CVPR-Submission-2026-FRAC-MAS](https://github.com/anonymous-submission-research/CVPR-Submission-2026-FRAC-MAS) |
+| Clinician Evaluation Rubric | [cvpr-submission-frac-mas.vercel.app/rubric](https://cvpr-submission-frac-mas.vercel.app/rubric)                                                         |
 | Technical Report PDF        | [`outputs/reports/diagnosis_report.pdf`](outputs/reports/diagnosis_report.pdf)                                                                         |
 
 ## System Architecture
@@ -267,7 +267,7 @@ MaxViT isolates fracture lines; HyperColumn-CBAM captures structural context. Th
 ## Project Structure
 
 ```
-CVPR-Submission-2026-MAC-DSS/
+CVPR-Submission-2026-FRAC-MAS/
 │
 ├──  website/                          # Next.js 16 + React 19 web interface (Vercel)
 │   ├──  src/app/                      # App Router pages (diagnose/, rubric/, api/)
@@ -395,8 +395,8 @@ CVPR-Submission-2026-MAC-DSS/
 
 ```bash
 # Clone the repository
-git clone https://github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS.git
-cd CVPR-Submission-2026-MAC-DSS
+git clone https://github.com/anonymous-submission-research/CVPR-Submission-2026-FRAC-MAS.git
+cd CVPR-Submission-2026-FRAC-MAS
 
 # Create virtual environment
 python -m venv venv
@@ -621,7 +621,7 @@ Pages: `/` (landing), `/diagnose` (inference UI with per-model Grad-CAM toggle),
 cd website && npm run build && npm start
 ```
 
-Deployed on **Vercel** at [cvpr-submission-mac-dss.vercel.app](https://cvpr-submission-mac-dss.vercel.app).
+Deployed on **Vercel** at [cvpr-submission-frac-mas.vercel.app](https://cvpr-submission-frac-mas.vercel.app).
 
 ### Backend (`backend_hf/`)
 

@@ -158,7 +158,7 @@ export default function Home() {
                 </Button>
               </Link>
               <a
-                href="https://github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS"
+                href="https://github.com/anonymous-submission-research/CVPR-Submission-2026-FRAC-MAS"
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -979,7 +979,7 @@ export default function Home() {
                 </p>
               </Link>
               <a
-                href="https://github.com/anonymous-submission-research/CVPR-Submission-2026-MAC-DSS"
+                href="https://github.com/anonymous-submission-research/CVPR-Submission-2026-FRAC-MAS"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="group border border-slate-700 bg-slate-900/60 hover:border-slate-500 hover:bg-slate-800/60 rounded-lg p-6 text-center space-y-2 transition-all"

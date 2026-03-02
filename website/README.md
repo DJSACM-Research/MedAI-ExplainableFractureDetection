@@ -2,7 +2,7 @@
 
 The official web interface for the MedAI Fracture Detection System. Built with **Next.js 16**, React 19, Tailwind CSS, Shadcn UI, and Radix UI.
 
-**Live Demo:** [cvpr-submission-mac-dss.vercel.app](https://cvpr-submission-fracture-ai.vercel.app)
+**Live Demo:** [cvpr-submission-frac-mas.vercel.app](https://cvpr-submission-frac-mas.vercel.app)
 
 ## Pages
 
