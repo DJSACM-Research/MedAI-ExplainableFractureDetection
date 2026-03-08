@@ -222,21 +222,21 @@ export default function Home() {
               ensemble of four fine-tuned models (HyperColumn-CBAM DenseNet-169,
               MaxViT, RAD-DINO, and YOLOv26m-cls) alongside four agents:
               Knowledge, Critic, Educational, and Patient Interface, each
-              addressing distinct clinical deployment risks — accessibility,
-              hallucination, false confidence, and interpretability.
+              addressing distinct clinical deployment risks — hallucination,
+              false confidence, interpretability, and accessibility.
             </p>
             <p className="text-slate-300 leading-relaxed text-base">
-              Our results (68.2% of responses scoring ≥ 4 for layperson
-              readability) confirm that the multi-agent pipeline effectively
-              bridges raw classification outputs and patient-friendly
-              explanations. The modest AUC on FracAtlas confirms that features
-              from hand and wrist X-rays do not transfer robustly to femoral
-              neck or vertebral fractures — bridging this gap will require
-              multi-anatomy training data and explicit domain adaptation. The
-              system enables patients to better understand their orthopedic
-              ailments and assists in identifying fractures in
-              resource-constrained settings, acting as a complementary
-              diagnostic aid for medical professionals.
+              The results underscore the pipeline's efficacy in distilling
+              technical fracture data into summaries that patients can easily
+              understand and act upon. The modest AUC while validating the
+              system on an external dataset like FracAtlas confirms that
+              features from hand and wrist X-rays do not transfer robustly to
+              femoral neck or vertebral fractures. Bridging this gap will
+              require multi-anatomy training data and explicit domain adaptation
+              strategies. Ultimately, our system, Frac-MAS, enables patients to better
+              understand their orthopedic ailments and assists in identifying
+              fractures in resource-constrained settings, acting as a
+              complementary diagnostic aid for medical professionals.
             </p>
           </div>
         </section>
