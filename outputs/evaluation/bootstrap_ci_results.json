@@ -1,0 +1,23 @@
+{
+  "n_bootstrap": 10000,
+  "seed": 42,
+  "accuracy": {
+    "dataset": "HBFMID-derived test split (balanced_augmented_dataset/test.csv)",
+    "n_samples": 112,
+    "observed": 0.892857,
+    "ci_95_lo": 0.830357,
+    "ci_95_hi": 0.946429,
+    "ci_95_width": 0.116071,
+    "boot_std": 0.029166
+  },
+  "auc": {
+    "dataset": "FracAtlas \u2014 Triplet (w/o RAD-DINO): MaxViT + YOLO + HyperColumn-CBAM",
+    "n_samples": 199,
+    "n_bootstrap_valid": 10000,
+    "observed": 0.651616,
+    "ci_95_lo": 0.572727,
+    "ci_95_hi": 0.723575,
+    "ci_95_width": 0.150848,
+    "boot_std": 0.038756
+  }
+}
