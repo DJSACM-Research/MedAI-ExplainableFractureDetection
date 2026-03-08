@@ -146,9 +146,8 @@ export default function Home() {
               CVPR 2026 Workshop Submission
             </p>
             <h1 className="text-3xl md:text-5xl font-extrabold leading-tight text-slate-100">
-              Bridging the Break: A Multi-Agent Framework for
-              <br className="hidden md:block" /> Human-Verified Orthopedic
-              Diagnosis
+              FRAC-MAS: Fracture Radiograph Analysis using
+              <br className="hidden md:block" /> Conformal Multi-Agent System
             </h1>
             <p className="text-base text-slate-400">Anonymous Authors</p>
             <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
